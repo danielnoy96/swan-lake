@@ -11,6 +11,7 @@ const N = 4200, BLACK_PCT = 0.1;
 const TRANSITION_DURATION = 2.0, DANCE_PORTION = 0.6;
 const MIC_THRESHOLD = 0.03;
 const AUTO_SPEED = 0.03;
+const INTERP_SHARPNESS = 1.6; // >1 reduces "double exposure" trails during motion
 
 // ---- State ----
 let mic, amp, audioStarted = false;
@@ -19,6 +20,8 @@ let t = 0, _prevT = 0, tAdvanced = false;
 let debugOn = true, imagesDrawnToCanvas = false;
 let showGrid = false;
 let autoRun = false;
+let catchUp = 0;
+let debugMeanCellDist = 0;
 let actFrames = { 1: [], 2: [], 3: [], 4: [] };
 
 let COLS = 1, ROWS = 1, CELLS = 1;
@@ -273,17 +276,18 @@ const Particles = {
       this.order[i] = this.order[j]; this.order[j] = tmp;
     }
   },
-  rebuildCellsFromPos() {
-    this.cellCounts.fill(0);
-    for (let i = 0; i < N; i++) {
-      const c = posToCell(this.x[i], this.y[i]);
-      this.cell[i] = c; this.cellCounts[c] = min(65535, this.cellCounts[c] + 1);
-    }
-  },
   setDesired(counts, off0, off1, alpha) {
-    const a = constrain(alpha, 0, 1), ia = 1 - a;
+    const a = constrain(alpha, 0, 1);
+    let w1 = pow(a, INTERP_SHARPNESS);
+    let w0 = pow(1 - a, INTERP_SHARPNESS);
+    const ws = w0 + w1;
+    if (ws > 1e-9) { w0 /= ws; w1 /= ws; } else { w0 = 1; w1 = 0; }
     let sum = 0;
-    for (let i = 0; i < CELLS; i++) { const v = (counts[off0 + i] * ia + counts[off1 + i] * a + 0.5) | 0; this.desired[i] = v; sum += v; }
+    for (let i = 0; i < CELLS; i++) {
+      const v = (counts[off0 + i] * w0 + counts[off1 + i] * w1 + 0.5) | 0;
+      this.desired[i] = v;
+      sum += v;
+    }
     let diff = N - sum;
     if (diff > 0) { for (let i = 0; i < CELLS && diff > 0; i++) if (this.desired[i] > 0) { this.desired[i]++; diff--; } if (diff > 0) this.desired[posToCell(width * 0.5, height * 0.5)] += diff; }
     else if (diff < 0) { diff = -diff; for (let i = CELLS - 1; i >= 0 && diff > 0; i--) if (this.desired[i] > 0) { this.desired[i]--; diff--; } }
@@ -322,20 +326,21 @@ const Particles = {
     // If no deficit nearby, take a guided 1-cell hop toward the strongest deficit in a wider radius.
     // This fixes "left behind" islands without teleporting across the screen.
     if (bestNeed <= 0) {
+      if (_hotCount <= 0) return -1;
       let target = -1;
       let bestScore = 0;
-      const R = 10;
-      for (let dr = -R; dr <= R; dr++) {
-        const rr = r + dr; if (rr < 0 || rr >= ROWS) continue;
-        for (let dc = -R; dc <= R; dc++) {
-          if (dr === 0 && dc === 0) continue;
-          const cc = c + dc; if (cc < 0 || cc >= COLS) continue;
-          const nb = rr * COLS + cc;
-          const score = (this.desired[nb] | 0) - (this.cellCounts[nb] | 0);
-          if (score > bestScore) { bestScore = score; target = nb; }
-        }
+      const maxK = min(_hotCount, 24);
+      for (let k = 0; k < maxK; k++) {
+        const cell2 = _hotCells[k];
+        const need2 = _hotNeeds[k];
+        if (cell2 < 0 || need2 <= 0) continue;
+        const r2 = (cell2 / COLS) | 0;
+        const c2 = cell2 - r2 * COLS;
+        const dist = abs(r2 - r) + abs(c2 - c);
+        const score = need2 / (1 + dist);
+        if (score > bestScore) { bestScore = score; target = cell2; }
       }
-      if (target < 0 || bestScore <= 0) return -1;
+      if (target < 0) return -1;
       const tr = (target / COLS) | 0;
       const tc = target - tr * COLS;
       const stepR = tr > r ? 1 : tr < r ? -1 : 0;
@@ -409,12 +414,15 @@ const Particles = {
       }
     }
   },
-  updateInsideCells(level, snap01, flowAmt) {
-    const damp = 0.78, maxSpd = 3.6;
-    const att = 0.10 + map(level, 0, 0.2, 0, 0.26, true);
-    const wobbleAmp = 0.28 + map(level, 0, 0.2, 0, 0.55, true), wobbleF = 0.35;
+  updateInsideCells(level, snap01, flowAmt, catchUp01) {
+    const cu = constrain(catchUp01 || 0, 0, 1);
+    const damp = lerp(0.80, 0.72, cu);
+    const maxSpd = lerp(3.6, 5.2, cu);
+    const att = (0.10 + map(level, 0, 0.2, 0, 0.26, true)) * (1 + cu * 0.9);
+    const wobbleAmp = (0.28 + map(level, 0, 0.2, 0, 0.55, true)) * (1 - cu * 0.75);
+    const wobbleF = 0.35;
     const flow = 0.006 + map(level, 0, 0.2, 0, 0.03, true);
-    const swirlBase = (0.04 + map(level, 0, 0.2, 0, 0.08, true)) * flowAmt;
+    const swirlBase = (0.04 + map(level, 0, 0.2, 0, 0.08, true)) * flowAmt * (1 - cu * 0.9);
     const cx = width * 0.5, cy = height * 0.5;
 
     for (let i = 0; i < N; i++) {
@@ -434,8 +442,8 @@ const Particles = {
       const dx = tx - this.x[i], dy = ty - this.y[i];
       this.vx[i] += dx * att; this.vy[i] += dy * att;
 
-      // Small continuous micro-motion inside the cell (prevents "stuck" feeling even when shape is static)
-      const jig = 0.03 + map(level, 0, 0.2, 0, 0.06, true);
+      // Small continuous micro-motion inside the cell (reduced during catch-up so it doesn't leave trails)
+      const jig = (0.03 + map(level, 0, 0.2, 0, 0.06, true)) * (1 - cu * 0.8);
       this.vx[i] += (noise(i * 0.013, 9.1, t * 0.5) - 0.5) * jig;
       this.vy[i] += (noise(i * 0.017, 3.7, t * 0.5) - 0.5) * jig;
 
@@ -493,6 +501,69 @@ function estimateMismatch() {
   return surplus;
 }
 
+function estimateMeanCellDist() {
+  const samples = min(220, N);
+  const stride = max(1, (N / samples) | 0);
+  let sum = 0;
+  for (let s = 0; s < samples; s++) {
+    const i = s * stride;
+    const cell = Particles.cell[i];
+    const ox = cellOriginX(cell), oy = cellOriginY(cell);
+    const tx = ox + Particles.u[i] * cellW;
+    const ty = oy + Particles.v[i] * cellH;
+    const dx = Particles.x[i] - tx, dy = Particles.y[i] - ty;
+    sum += sqrt(dx * dx + dy * dy);
+  }
+  return sum / samples;
+}
+
+const _hotCells = new Int32Array(48);
+const _hotNeeds = new Int32Array(48);
+let _hotCount = 0;
+
+function computeDeficitHotspots() {
+  // Top-k deficit cells by (desired - current). O(CELLS * K) with small K.
+  const K = _hotCells.length;
+  let count = 0;
+  for (let i = 0; i < K; i++) { _hotCells[i] = -1; _hotNeeds[i] = 0; }
+  for (let cell = 0; cell < CELLS; cell++) {
+    const need = (Particles.desired[cell] | 0) - (Particles.cellCounts[cell] | 0);
+    if (need <= 0) continue;
+    let j = count < K ? count++ : K - 1;
+    if (count === K && need <= _hotNeeds[j]) continue;
+    while (j > 0 && need > _hotNeeds[j - 1]) {
+      _hotNeeds[j] = _hotNeeds[j - 1];
+      _hotCells[j] = _hotCells[j - 1];
+      j--;
+    }
+    _hotNeeds[j] = need;
+    _hotCells[j] = cell;
+  }
+  _hotCount = count;
+}
+
+function catchUpNudge(strength01) {
+  if (_hotCount <= 0) return;
+  const cu = constrain(strength01, 0, 1);
+  // Gentle "hard catch-up" (no teleport): keep this subtle to avoid feeling too fast.
+  const kick = 0.00025 * (0.20 + cu * 0.60);
+  const stride = 10; // much fewer nudged particles per update
+  const seed = (t * 60) | 0;
+  for (let i = 0; i < N; i += stride) {
+    const from = Particles.cell[i];
+    const surplus = (Particles.cellCounts[from] | 0) - (Particles.desired[from] | 0);
+    if (surplus <= 0) continue;
+    const idx = (i + seed) % _hotCount;
+    const targetCell = _hotCells[idx];
+    const tx = cellOriginX(targetCell) + cellW * 0.5;
+    const ty = cellOriginY(targetCell) + cellH * 0.5;
+    const dx = tx - Particles.x[i];
+    const dy = ty - Particles.y[i];
+    Particles.vx[i] += dx * kick;
+    Particles.vy[i] += dy * kick;
+  }
+}
+
 // ---- Act controller (single source of truth for timing) ----
 const Acts = {
   mode: "ACT", act: 1, next: 2, actStartT: 0, transitionStartT: 0,
@@ -517,7 +588,6 @@ const Acts = {
     this.mode = "TRANSITION";
     this.transitionStartT = t;
     this.next = nextActWithFrames(this.act);
-    if (tAdvanced) Particles.rebuildCellsFromPos();
   },
   endTransition() {
     this.act = this.next;
@@ -617,23 +687,34 @@ function draw() {
   Acts.update();
 
   let desiredSum = 0, moved = 0;
+  let mismatch = 0;
 
   if (Acts.mode === "ACT") {
     if (Acts.cycle > 0) {
       const ok0 = Sampler.ensure(Acts.act, Acts.src0, Acts.cycle, _off0);
       const ok1 = Sampler.ensure(Acts.act, Acts.src1, Acts.cycle, _off1);
-      if (ok0 && ok1) {
+      if (ok0 || ok1) {
         const counts = Sampler.counts(Acts.act);
-        Particles.setDesired(counts, _off0.off, _off1.off, Acts.alpha);
+        if (ok0 && ok1) Particles.setDesired(counts, _off0.off, _off1.off, Acts.alpha);
+        else if (ok0) Particles.setDesired(counts, _off0.off, _off0.off, 0);
+        else Particles.setDesired(counts, _off1.off, _off1.off, 0);
         for (let i = 0; i < CELLS; i++) desiredSum += Particles.desired[i];
         if (tAdvanced) {
-          const mismatch = estimateMismatch();
-          const passes = mismatch > 900 ? 10 : mismatch > 600 ? 8 : mismatch > 350 ? 6 : mismatch > 180 ? 4 : 3;
+          mismatch = estimateMismatch();
+          debugMeanCellDist = estimateMeanCellDist();
+          // Position-based catch-up helps prevent "stuck in space", but keep it mild.
+          const posCU = constrain((debugMeanCellDist - cellW * 0.85) / (cellW * 3.2), 0, 1);
+          const targetCU = constrain((mismatch - N * 0.10) / (N * 0.45), 0, 1);
+          catchUp = max(catchUp * 0.94, targetCU, posCU * 0.35);
+          const passes = (mismatch > 900 ? 10 : mismatch > 600 ? 8 : mismatch > 350 ? 6 : mismatch > 180 ? 4 : 3) + floor(catchUp * 2);
           moved += Particles.rebalancePasses(passes);
-          // Mild snap in ACT improves clarity while still allowing motion inside cells
-          Particles.updateInsideCells(level, 0.18, 0.15);
+          // Always keep hotspots fresh; used both for nudges and for long-range deficit guidance.
+          computeDeficitHotspots();
+          if (catchUp > 0.32) catchUpNudge(catchUp);
+          // Catch-up increases snap/attraction but stays smooth (no teleport)
+          Particles.updateInsideCells(level, 0.18 + catchUp * 0.26, 0.15, catchUp * 0.7);
           Particles.separate(0.018, 3.2);
-          Particles.rebuildCellsFromPos();
+          catchUp *= 0.97;
         }
       }
     }
@@ -646,7 +727,6 @@ function draw() {
     if (tAdvanced) {
       if (stageA) {
         Particles.dance(level, s);
-        Particles.rebuildCellsFromPos();
       } else {
         const a = Acts.next;
         const loaded = (actFrames[a] || []).length;
@@ -658,10 +738,12 @@ function draw() {
             const counts = Sampler.counts(a);
             Particles.setDesired(counts, _off0.off, _off1.off, s);
             for (let i = 0; i < CELLS; i++) desiredSum += Particles.desired[i];
+            debugMeanCellDist = estimateMeanCellDist();
             moved += Particles.rebalancePasses(7);
-            Particles.updateInsideCells(level, map(p, 0.88, 1.0, 0, 1, true), 0.0);
+            computeDeficitHotspots();
+            if (p > 0.74) catchUpNudge(0.25);
+            Particles.updateInsideCells(level, map(p, 0.88, 1.0, 0, 1, true), 0.0, 0.65);
             Particles.separate(0.020, 3.2);
-            Particles.rebuildCellsFromPos();
           }
         }
       }
@@ -669,7 +751,7 @@ function draw() {
     Particles.draw();
   }
 
-  if (debugOn) drawDebug(level, desiredSum, moved);
+  if (debugOn) drawDebug(level, desiredSum, moved, mismatch);
   if (showGrid) drawGridOverlay();
 }
 
@@ -686,12 +768,12 @@ function mousePressed() {
 
 function keyPressed() { if (key === "d" || key === "D") debugOn = !debugOn; }
 
-function drawDebug(level, desiredSum, moved) {
+function drawDebug(level, desiredSum, moved, mismatch) {
   const loaded = (actFrames[Acts.act] || []).length;
   push(); noStroke(); fill(0, 160); rect(10, 10, 470, 106, 8); fill(255); textSize(12); textAlign(LEFT, TOP);
   text(`mode:${Acts.mode} act:${Acts.act} next:${Acts.next}  t:${t.toFixed(2)} el:${Acts.elapsed.toFixed(2)} dur:${Acts.dur.toFixed(2)} fps:${Acts.fps}`, 18, 16);
   text(`cycle:${Acts.cycle} SRC:${SRC_COUNT[Acts.act] || 0} loaded:${loaded}  src0/src1:${Acts.src0}/${Acts.src1} a:${Acts.alpha.toFixed(2)} cycles:${Acts.cycles}`, 18, 32);
-  text(`grid:${COLS}x${ROWS} desiredSum:${desiredSum} moved:${moved}  cache(h/m):${Sampler.hitsF}/${Sampler.missesF} total:${Sampler.hits}/${Sampler.misses} level:${level.toFixed(3)}`, 18, 48);
+  text(`grid:${COLS}x${ROWS} desiredSum:${desiredSum} moved:${moved} mismatch:${mismatch} meanDist:${debugMeanCellDist.toFixed(1)} catchUp:${catchUp.toFixed(2)} hot:${_hotCount}  cache(h/m):${Sampler.hitsF}/${Sampler.missesF} total:${Sampler.hits}/${Sampler.misses} level:${level.toFixed(3)}`, 18, 48);
   text(`imagesDrawnToCanvas:${imagesDrawnToCanvas}`, 18, 64);
   pop();
 }
