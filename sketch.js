@@ -7,7 +7,7 @@ const FPS_EFFECTIVE = { 1: 24, 2: 24, 3: 24, 4: 24 }; // source frames per sound
 
 const TARGET_W = 160, TARGET_H = 284;
 const CELL_SIZE = 18; // square grid size (px) (tune: larger -> fewer cells -> denser silhouettes)
-const N = 3200, BLACK_PCT = 0.1;
+const N = 4200, BLACK_PCT = 0.1;
 const TRANSITION_DURATION = 2.0, DANCE_PORTION = 0.6;
 const MIC_THRESHOLD = 0.03;
 const AUTO_SPEED = 0.03;
@@ -83,6 +83,7 @@ const Sampler = {
   w: TARGET_W, h: TARGET_H,
   weights: new Float32Array(1), frac: new Float32Array(1),
   cdf: new Float32Array(1),
+  tmp: new Float32Array(1),
   pixCount: new Uint16Array(1),
   mask: new Uint8Array(1),
   visited: new Uint8Array(1),
@@ -97,6 +98,7 @@ const Sampler = {
     this.weights = new Float32Array(CELLS);
     this.frac = new Float32Array(CELLS);
     this.cdf = new Float32Array(CELLS);
+    this.tmp = new Float32Array(CELLS);
     this.pixCount = new Uint16Array(CELLS);
     this.mask = new Uint8Array(CELLS);
     this.visited = new Uint8Array(CELLS);
@@ -112,9 +114,7 @@ const Sampler = {
   _weightAt(px) {
     const a = this.g.pixels[px + 3] / 255; if (a <= 0.05) return 0;
     const br = (this.g.pixels[px] + this.g.pixels[px + 1] + this.g.pixels[px + 2]) / 765;
-    const b = br - 0.08;
-    if (b <= 0) return 0;
-    return b * a;
+    return br * a;
   },
   _compute(img, outCounts) {
     fitRect(img.width, img.height, this.w, this.h, this.rG);
@@ -150,42 +150,61 @@ const Sampler = {
       }
     }
 
-    // Convert per-cell brightness to raw weights (later resampled to exactly N particles)
-    // This keeps particles spread across all bright cells instead of collapsing to a few.
-    const BR_THR = 0.10;
-    const GAMMA = 1.10;
+    // Convert per-cell brightness to raw weights, normalized per-frame so gray-heavy frames still fill.
+    // Then systematic-resample to exactly N particles.
+    const BR_THR = 0.06;     // threshold in normalized brightness space (0..1)
+    const GAMMA = 0.75;      // <1 boosts midtones so grays get particles
+    const GREY_LIFT = 0.22;  // extra linear weight to further support midtones
 
     this.mask.fill(0);
-    let rawSum = 0;
+    let maxBr = 0;
     for (let i = 0; i < CELLS; i++) {
       const pc = this.pixCount[i];
       if (pc === 0) { this.weights[i] = 0; continue; }
-      let br = this.weights[i] / pc; // ~0..1
-      br = (br - BR_THR) / max(1e-6, 1 - BR_THR);
-      if (br <= 0) { this.weights[i] = 0; continue; }
-      br = pow(br, GAMMA);
-      const raw = br;
-      this.weights[i] = raw;
-      this.mask[i] = 1;
-      rawSum += raw;
+      const br = this.weights[i] / pc; // ~0..1
+      this.weights[i] = br;
+      if (br > maxBr) maxBr = br;
     }
 
-    // Remove isolated single-cell noise (one pass)
-    for (let i = 0; i < CELLS; i++) {
-      if (this.mask[i] === 0) continue;
-      const r = (i / COLS) | 0;
-      const c = i - r * COLS;
-      let n = 0;
-      for (let dr = -1; dr <= 1; dr++) {
-        const rr = r + dr; if (rr < 0 || rr >= ROWS) continue;
-        for (let dc = -1; dc <= 1; dc++) {
-          if (dr === 0 && dc === 0) continue;
-          const cc = c + dc; if (cc < 0 || cc >= COLS) continue;
-          n += this.mask[rr * COLS + cc];
-        }
-      }
-      if (n < 2) { rawSum -= this.weights[i]; this.weights[i] = 0; this.mask[i] = 0; }
+    if (maxBr <= 1e-6) {
+      outCounts.fill(0); outCounts[posToCell(width * 0.5, height * 0.5)] = N; return;
     }
+
+    // Normalize and build weights
+    let rawSum = 0;
+    for (let i = 0; i < CELLS; i++) {
+      const brN = this.weights[i] / maxBr;
+      const x = (brN - BR_THR) / max(1e-6, 1 - BR_THR);
+      if (x <= 0) { this.weights[i] = 0; continue; }
+      const w = pow(x, GAMMA) + GREY_LIFT * x;
+      this.weights[i] = w;
+      this.mask[i] = 1;
+      rawSum += w;
+    }
+
+    // Light smoothing to fill gray regions and reduce "missing rows" from sampling quantization
+    this.tmp.fill(0);
+    for (let r = 0; r < ROWS; r++) {
+      for (let c = 0; c < COLS; c++) {
+        const i = r * COLS + c;
+        let sum = 0;
+        let cnt = 0;
+        for (let dr = -1; dr <= 1; dr++) {
+          const rr = r + dr; if (rr < 0 || rr >= ROWS) continue;
+          for (let dc = -1; dc <= 1; dc++) {
+            const cc = c + dc; if (cc < 0 || cc >= COLS) continue;
+            const j = rr * COLS + cc;
+            const w = this.weights[j];
+            if (w <= 0) continue;
+            sum += w;
+            cnt++;
+          }
+        }
+        if (cnt > 0) this.tmp[i] = (this.weights[i] * 0.6) + (sum / cnt) * 0.4;
+      }
+    }
+    rawSum = 0;
+    for (let i = 0; i < CELLS; i++) { this.weights[i] = this.tmp[i]; rawSum += this.weights[i]; }
 
     if (rawSum <= 1e-9) {
       outCounts.fill(0); outCounts[posToCell(width * 0.5, height * 0.5)] = N; return;
@@ -460,7 +479,7 @@ const Particles = {
   },
   draw() {
     noStroke();
-    for (let i = 0; i < N; i++) { this.kind[i] ? fill(0, 210) : fill(255, 235); circle(this.x[i], this.y[i], 2.1); }
+    for (let i = 0; i < N; i++) { this.kind[i] ? fill(0, 210) : fill(255, 235); circle(this.x[i], this.y[i], 2.5); }
   },
 };
 
