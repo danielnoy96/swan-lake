@@ -13,6 +13,13 @@ const MIC_THRESHOLD = 0.03;
 const AUTO_SPEED = 0.03;
 const INTERP_SHARPNESS = 1.6; // >1 reduces "double exposure" trails during motion
 
+// "Void travel" cleanup: when particles must cross empty (alpha=0) areas, guide them along 3 clean lanes
+// (1 straight + 2 arced) between their current position and their destination.
+const VOID_MIN_DIST_CELLS = 4.0;  // only engage lanes if far enough (in cell units)
+const VOID_SAMPLES = 3;           // line samples to detect crossing empty space
+const VOID_EMPTY_NEED = 2;        // how many samples must be empty to engage lanes
+const LANE_LOOKAHEAD = 0.08;      // progress lookahead along lane (0..1)
+
 // ---- State ----
 let mic, amp, audioStarted = false;
 let micRunning = false;
@@ -22,6 +29,7 @@ let showGrid = false;
 let autoRun = false;
 let catchUp = 0;
 let debugMeanCellDist = 0;
+let debugTransport = 0;
 let actFrames = { 1: [], 2: [], 3: [], 4: [] };
 
 let COLS = 1, ROWS = 1, CELLS = 1;
@@ -245,6 +253,12 @@ const Particles = {
   kind: new Uint8Array(N), cell: new Uint16Array(N), u: new Float32Array(N), v: new Float32Array(N),
   order: new Uint16Array(N),
   cellCounts: new Uint16Array(1), desired: new Uint16Array(1),
+  // transport lanes (for clean motion across empty space)
+  trA: new Uint8Array(N),
+  trSX: new Float32Array(N), trSY: new Float32Array(N),
+  trEX: new Float32Array(N), trEY: new Float32Array(N),
+  trNX: new Float32Array(N), trNY: new Float32Array(N),
+  trAmp: new Float32Array(N),
   // spatial hash
   binSize: 6, binsX: 1, binsY: 1, binHead: new Int32Array(1), binNext: new Int32Array(N),
 
@@ -270,6 +284,7 @@ const Particles = {
       const c = posToCell(this.x[i], this.y[i]);
       this.cell[i] = c; this.cellCounts[c] = min(65535, this.cellCounts[c] + 1);
       this.u[i] = random(); this.v[i] = random();
+      this.trA[i] = 0;
     }
     for (let i = N - 1; i > 0; i--) {
       const j = floor(random(i + 1)), tmp = this.order[i];
@@ -425,27 +440,144 @@ const Particles = {
     const swirlBase = (0.04 + map(level, 0, 0.2, 0, 0.08, true)) * flowAmt * (1 - cu * 0.9);
     const cx = width * 0.5, cy = height * 0.5;
 
+    debugTransport = 0;
+
     for (let i = 0; i < N; i++) {
       const cell = this.cell[i];
       const ox = cellOriginX(cell), oy = cellOriginY(cell);
-      const nx1 = noise((i + 1) * 0.017, (i + 7) * 0.031, t * wobbleF);
-      const ny1 = noise((i + 9) * 0.019, (i + 3) * 0.029, t * wobbleF);
-      const tx = ox + this.u[i] * cellW + (nx1 - 0.5) * 2 * wobbleAmp;
-      const ty = oy + this.v[i] * cellH + (ny1 - 0.5) * 2 * wobbleAmp;
 
-      const ang = noise(this.x[i] * 0.0018, this.y[i] * 0.0018, t * 0.22) * TWO_PI * 2;
-      const dxC = this.x[i] - cx, dyC = this.y[i] - cy, dC = sqrt(dxC * dxC + dyC * dyC) + 0.001;
-      const swirl = swirlBase * constrain(1 - dC / (min(width, height) * 0.7), 0, 1);
-      this.vx[i] += (cos(ang) * flow + (-dyC / dC) * swirl) * 0.18;
-      this.vy[i] += (sin(ang) * flow + (dxC / dC) * swirl) * 0.18;
+      let snapX = 0, snapY = 0;
+      let snapBase = 0.10, snapScale = 0.62, snapVelScale = 0.65;
+      let hasSnap = false;
 
-      const dx = tx - this.x[i], dy = ty - this.y[i];
-      this.vx[i] += dx * att; this.vy[i] += dy * att;
+      // Base destination inside the assigned cell
+      const baseTx = ox + this.u[i] * cellW;
+      const baseTy = oy + this.v[i] * cellH;
 
-      // Small continuous micro-motion inside the cell (reduced during catch-up so it doesn't leave trails)
-      const jig = (0.03 + map(level, 0, 0.2, 0, 0.06, true)) * (1 - cu * 0.8);
-      this.vx[i] += (noise(i * 0.013, 9.1, t * 0.5) - 0.5) * jig;
-      this.vy[i] += (noise(i * 0.017, 3.7, t * 0.5) - 0.5) * jig;
+      // Detect if we're crossing a large empty region (desired==0) between current position and destination.
+      const posCell = posToCell(this.x[i], this.y[i]);
+      const posEmpty = (this.desired[posCell] | 0) === 0;
+      const dxBase = baseTx - this.x[i], dyBase = baseTy - this.y[i];
+      const distBase = sqrt(dxBase * dxBase + dyBase * dyBase);
+
+      let useLane = false;
+      if (posEmpty && distBase > cellW * VOID_MIN_DIST_CELLS) {
+        let emptyHits = 0;
+        // Sample along the straight segment; if mostly empty, guide along a clean lane
+        for (let s = 1; s <= VOID_SAMPLES; s++) {
+          const tt = s / (VOID_SAMPLES + 1);
+          const sx = this.x[i] + dxBase * tt;
+          const sy = this.y[i] + dyBase * tt;
+          const sc = posToCell(sx, sy);
+          if ((this.desired[sc] | 0) === 0) emptyHits++;
+        }
+        useLane = emptyHits >= VOID_EMPTY_NEED;
+      }
+
+      // If lane is engaged, route via 1 of 3 deterministic trajectories: straight / arc+ / arc-
+      if (useLane) {
+        const lane = i % 3;
+        const sign = lane === 1 ? 1 : lane === 2 ? -1 : 0;
+
+        // Start lane segment on first entry (or if destination moved too far)
+        if (!this.trA[i] || abs(baseTx - this.trEX[i]) + abs(baseTy - this.trEY[i]) > cellW * 6) {
+          this.trA[i] = 1;
+          this.trSX[i] = this.x[i]; this.trSY[i] = this.y[i];
+          this.trEX[i] = baseTx; this.trEY[i] = baseTy;
+          const dx = this.trEX[i] - this.trSX[i];
+          const dy = this.trEY[i] - this.trSY[i];
+          const len = sqrt(dx * dx + dy * dy) + 1e-6;
+          this.trNX[i] = -dy / len;
+          this.trNY[i] = dx / len;
+          this.trAmp[i] = min(cellW * 7.5, len * 0.22);
+        } else {
+          // Follow destination smoothly so the lane remains stable
+          this.trEX[i] = lerp(this.trEX[i], baseTx, 0.25);
+          this.trEY[i] = lerp(this.trEY[i], baseTy, 0.25);
+          const dx = this.trEX[i] - this.trSX[i];
+          const dy = this.trEY[i] - this.trSY[i];
+          const len = sqrt(dx * dx + dy * dy) + 1e-6;
+          this.trNX[i] = -dy / len;
+          this.trNY[i] = dx / len;
+          this.trAmp[i] = min(cellW * 7.5, len * 0.22);
+        }
+
+        const sx = this.trSX[i], sy = this.trSY[i];
+        const ex = this.trEX[i], ey = this.trEY[i];
+        const dx = ex - sx, dy = ey - sy;
+        const len2 = dx * dx + dy * dy + 1e-6;
+        // progress along the segment based on projection
+        let prog = ((this.x[i] - sx) * dx + (this.y[i] - sy) * dy) / len2;
+        prog = constrain(prog, 0, 1);
+        const prog2 = min(1, prog + LANE_LOOKAHEAD);
+
+        const sin1 = sign === 0 ? 0 : sin(prog * PI);
+        const sin2 = sign === 0 ? 0 : sin(prog2 * PI);
+
+        const amp = this.trAmp[i] * sign;
+        const nx = this.trNX[i], ny = this.trNY[i];
+
+        const px = sx + dx * prog + nx * amp * sin1;
+        const py = sy + dy * prog + ny * amp * sin1;
+        const ax = sx + dx * prog2 + nx * amp * sin2;
+        const ay = sy + dy * prog2 + ny * amp * sin2;
+
+        // Pull toward lane and push forward along it (orderly trajectories)
+        const pull = 0.030 + cu * 0.010;
+        const push = 0.42 + cu * 0.28;
+        const txLane = px;
+        const tyLane = py;
+        snapX = txLane; snapY = tyLane;
+        snapBase = 0.08; snapScale = 0.55; snapVelScale = 0.55;
+        hasSnap = true;
+        let tdx = ax - px, tdy = ay - py;
+        const tl = sqrt(tdx * tdx + tdy * tdy) + 1e-6;
+        tdx /= tl; tdy /= tl;
+
+        // Reduce noisy motions while in lane
+        const laneSwirl = swirlBase * 0.15;
+        const laneFlow = flow * 0.25;
+        const ang = noise(this.x[i] * 0.0018, this.y[i] * 0.0018, t * 0.22) * TWO_PI * 2;
+        const dxC = this.x[i] - cx, dyC = this.y[i] - cy, dC = sqrt(dxC * dxC + dyC * dyC) + 0.001;
+        const swirl = laneSwirl * constrain(1 - dC / (min(width, height) * 0.7), 0, 1);
+        this.vx[i] += (cos(ang) * laneFlow + (-dyC / dC) * swirl) * 0.18;
+        this.vy[i] += (sin(ang) * laneFlow + (dxC / dC) * swirl) * 0.18;
+
+        const dxT = txLane - this.x[i], dyT = tyLane - this.y[i];
+        this.vx[i] += dxT * pull;
+        this.vy[i] += dyT * pull;
+        this.vx[i] += tdx * push * 0.03;
+        this.vy[i] += tdy * push * 0.03;
+
+        // Rejoin normal behavior near the destination
+        if (prog > 0.92 || !posEmpty) this.trA[i] = 0;
+        else debugTransport++;
+
+      } else {
+        this.trA[i] = 0;
+
+        const nx1 = noise((i + 1) * 0.017, (i + 7) * 0.031, t * wobbleF);
+        const ny1 = noise((i + 9) * 0.019, (i + 3) * 0.029, t * wobbleF);
+        const tx = baseTx + (nx1 - 0.5) * 2 * wobbleAmp;
+        const ty = baseTy + (ny1 - 0.5) * 2 * wobbleAmp;
+        snapX = tx; snapY = ty;
+        snapBase = 0.10; snapScale = 0.62; snapVelScale = 0.65;
+        hasSnap = true;
+
+        const ang = noise(this.x[i] * 0.0018, this.y[i] * 0.0018, t * 0.22) * TWO_PI * 2;
+        const dxC = this.x[i] - cx, dyC = this.y[i] - cy, dC = sqrt(dxC * dxC + dyC * dyC) + 0.001;
+        const swirl = swirlBase * constrain(1 - dC / (min(width, height) * 0.7), 0, 1);
+        this.vx[i] += (cos(ang) * flow + (-dyC / dC) * swirl) * 0.18;
+        this.vy[i] += (sin(ang) * flow + (dxC / dC) * swirl) * 0.18;
+
+        const dx = tx - this.x[i], dy = ty - this.y[i];
+        this.vx[i] += dx * att; this.vy[i] += dy * att;
+
+        // Small continuous micro-motion inside the cell (reduced during catch-up so it doesn't leave trails)
+        const jig = (0.03 + map(level, 0, 0.2, 0, 0.06, true)) * (1 - cu * 0.8);
+        this.vx[i] += (noise(i * 0.013, 9.1, t * 0.5) - 0.5) * jig;
+        this.vy[i] += (noise(i * 0.017, 3.7, t * 0.5) - 0.5) * jig;
+      }
 
       this.vx[i] *= damp; this.vy[i] *= damp;
 
@@ -459,10 +591,13 @@ const Particles = {
       if (this.y[i] < 0) { this.y[i] = 0; this.vy[i] *= -0.25; }
       else if (this.y[i] > height) { this.y[i] = height; this.vy[i] *= -0.25; }
 
-      if (snap01 > 0) {
-        const k = 0.10 + snap01 * 0.62;
-        this.x[i] = lerp(this.x[i], tx, k); this.y[i] = lerp(this.y[i], ty, k);
-        this.vx[i] *= 1 - snap01 * 0.65; this.vy[i] *= 1 - snap01 * 0.65;
+      if (snap01 > 0 && hasSnap) {
+        const k = snapBase + snap01 * snapScale;
+        this.x[i] = lerp(this.x[i], snapX, k);
+        this.y[i] = lerp(this.y[i], snapY, k);
+        const vk = 1 - snap01 * snapVelScale;
+        this.vx[i] *= vk;
+        this.vy[i] *= vk;
       }
     }
   },
@@ -773,7 +908,7 @@ function drawDebug(level, desiredSum, moved, mismatch) {
   push(); noStroke(); fill(0, 160); rect(10, 10, 470, 106, 8); fill(255); textSize(12); textAlign(LEFT, TOP);
   text(`mode:${Acts.mode} act:${Acts.act} next:${Acts.next}  t:${t.toFixed(2)} el:${Acts.elapsed.toFixed(2)} dur:${Acts.dur.toFixed(2)} fps:${Acts.fps}`, 18, 16);
   text(`cycle:${Acts.cycle} SRC:${SRC_COUNT[Acts.act] || 0} loaded:${loaded}  src0/src1:${Acts.src0}/${Acts.src1} a:${Acts.alpha.toFixed(2)} cycles:${Acts.cycles}`, 18, 32);
-  text(`grid:${COLS}x${ROWS} desiredSum:${desiredSum} moved:${moved} mismatch:${mismatch} meanDist:${debugMeanCellDist.toFixed(1)} catchUp:${catchUp.toFixed(2)} hot:${_hotCount}  cache(h/m):${Sampler.hitsF}/${Sampler.missesF} total:${Sampler.hits}/${Sampler.misses} level:${level.toFixed(3)}`, 18, 48);
+  text(`grid:${COLS}x${ROWS} desiredSum:${desiredSum} moved:${moved} mismatch:${mismatch} meanDist:${debugMeanCellDist.toFixed(1)} catchUp:${catchUp.toFixed(2)} hot:${_hotCount} lane:${debugTransport}  cache(h/m):${Sampler.hitsF}/${Sampler.missesF} total:${Sampler.hits}/${Sampler.misses} level:${level.toFixed(3)}`, 18, 48);
   text(`imagesDrawnToCanvas:${imagesDrawnToCanvas}`, 18, 64);
   pop();
 }
