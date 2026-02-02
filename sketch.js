@@ -19,11 +19,12 @@ const VOID_MIN_DIST_CELLS = 4.0;  // only engage lanes if far enough (in cell un
 const VOID_SAMPLES = 3;           // line samples to detect crossing empty space
 const VOID_EMPTY_NEED = 2;        // how many samples must be empty to engage lanes
 const LANE_LOOKAHEAD = 0.08;      // progress lookahead along lane (0..1)
+const LANE_DT_REF = 0.03;         // reference sound-time step (used to normalize lane speed)
 
 // ---- State ----
 let mic, amp, audioStarted = false;
 let micRunning = false;
-let t = 0, _prevT = 0, tAdvanced = false;
+let t = 0, _prevT = 0, tAdvanced = false, tDelta = 0;
 let debugOn = true, imagesDrawnToCanvas = false;
 let showGrid = false;
 let autoRun = false;
@@ -255,6 +256,9 @@ const Particles = {
   cellCounts: new Uint16Array(1), desired: new Uint16Array(1),
   // transport lanes (for clean motion across empty space)
   trA: new Uint8Array(N),
+  trP: new Float32Array(N),
+  trSign: new Int8Array(N),
+  trOff: new Float32Array(N),
   trSX: new Float32Array(N), trSY: new Float32Array(N),
   trEX: new Float32Array(N), trEY: new Float32Array(N),
   trNX: new Float32Array(N), trNY: new Float32Array(N),
@@ -285,6 +289,7 @@ const Particles = {
       this.cell[i] = c; this.cellCounts[c] = min(65535, this.cellCounts[c] + 1);
       this.u[i] = random(); this.v[i] = random();
       this.trA[i] = 0;
+      this.trP[i] = 0;
     }
     for (let i = N - 1; i > 0; i--) {
       const j = floor(random(i + 1)), tmp = this.order[i];
@@ -441,6 +446,7 @@ const Particles = {
     const cx = width * 0.5, cy = height * 0.5;
 
     debugTransport = 0;
+    const dtN = constrain(tDelta / LANE_DT_REF, 0, 2);
 
     for (let i = 0; i < N; i++) {
       const cell = this.cell[i];
@@ -476,7 +482,7 @@ const Particles = {
 
       // If lane is engaged, route via 1 of 3 deterministic trajectories: straight / arc+ / arc-
       if (useLane) {
-        const lane = i % 3;
+        const lane = i % 3; // 0=straight, 1=arc+, 2=arc-
         const sign = lane === 1 ? 1 : lane === 2 ? -1 : 0;
 
         // Start lane segment on first entry (or if destination moved too far)
@@ -489,42 +495,48 @@ const Particles = {
           const len = sqrt(dx * dx + dy * dy) + 1e-6;
           this.trNX[i] = -dy / len;
           this.trNY[i] = dx / len;
-          this.trAmp[i] = min(cellW * 7.5, len * 0.22);
-        } else {
-          // Follow destination smoothly so the lane remains stable
-          this.trEX[i] = lerp(this.trEX[i], baseTx, 0.25);
-          this.trEY[i] = lerp(this.trEY[i], baseTy, 0.25);
-          const dx = this.trEX[i] - this.trSX[i];
-          const dy = this.trEY[i] - this.trSY[i];
-          const len = sqrt(dx * dx + dy * dy) + 1e-6;
-          this.trNX[i] = -dy / len;
-          this.trNY[i] = dx / len;
-          this.trAmp[i] = min(cellW * 7.5, len * 0.22);
+
+          // Many thin "lanes" per trajectory: stable per-particle offset so we don't clump into 3 visible bands.
+          const h = hash01((i + 1) * 2654435761);
+          const off01 = (h - 0.5) * 2; // -1..1
+          this.trSign[i] = sign;
+          this.trOff[i] = off01 * cellW * (sign === 0 ? 0.35 : 0.95);
+          this.trAmp[i] = sign === 0 ? 0 : min(cellW * 7.5, len * 0.22) * (0.80 + 0.25 * abs(off01));
+
+          // Initialize progress from projection (prevents snapping when lane starts)
+          const len2 = dx * dx + dy * dy + 1e-6;
+          let p0 = ((this.x[i] - this.trSX[i]) * dx + (this.y[i] - this.trSY[i]) * dy) / len2;
+          this.trP[i] = constrain(p0, 0, 1);
         }
 
         const sx = this.trSX[i], sy = this.trSY[i];
         const ex = this.trEX[i], ey = this.trEY[i];
         const dx = ex - sx, dy = ey - sy;
-        const len2 = dx * dx + dy * dy + 1e-6;
-        // progress along the segment based on projection
-        let prog = ((this.x[i] - sx) * dx + (this.y[i] - sy) * dy) / len2;
-        prog = constrain(prog, 0, 1);
-        const prog2 = min(1, prog + LANE_LOOKAHEAD);
+        const len = sqrt(dx * dx + dy * dy) + 1e-6;
 
-        const sin1 = sign === 0 ? 0 : sin(prog * PI);
-        const sin2 = sign === 0 ? 0 : sin(prog2 * PI);
+        // Explicit progress (fixes stalling): advance progress based on a px-per-sound-tick speed.
+        // This keeps trajectories clean and prevents particles getting "stuck" on curved arcs.
+        const stepPx = (cellW * (0.55 + cu * 1.10)) * dtN;
+        this.trP[i] = min(1, this.trP[i] + stepPx / len + 0.002 * dtN);
+        const prog = this.trP[i];
+        const prog2 = min(1, prog + max(LANE_LOOKAHEAD, (stepPx / len) * 1.35));
 
-        const amp = this.trAmp[i] * sign;
+        const sgn = this.trSign[i] | 0;
+        const sin1 = sgn === 0 ? 0 : sin(prog * PI);
+        const sin2 = sgn === 0 ? 0 : sin(prog2 * PI);
+
+        const amp = this.trAmp[i] * sgn;
         const nx = this.trNX[i], ny = this.trNY[i];
+        const off = this.trOff[i];
 
-        const px = sx + dx * prog + nx * amp * sin1;
-        const py = sy + dy * prog + ny * amp * sin1;
-        const ax = sx + dx * prog2 + nx * amp * sin2;
-        const ay = sy + dy * prog2 + ny * amp * sin2;
+        const px = sx + dx * prog + nx * (off + amp * sin1);
+        const py = sy + dy * prog + ny * (off + amp * sin1);
+        const ax = sx + dx * prog2 + nx * (off + amp * sin2);
+        const ay = sy + dy * prog2 + ny * (off + amp * sin2);
 
         // Pull toward lane and push forward along it (orderly trajectories)
-        const pull = 0.030 + cu * 0.010;
-        const push = 0.42 + cu * 0.28;
+        const pull = 0.032 + cu * 0.010;
+        const push = 0.42 + cu * 0.34;
         const txLane = px;
         const tyLane = py;
         snapX = txLane; snapY = tyLane;
@@ -550,7 +562,7 @@ const Particles = {
         this.vy[i] += tdy * push * 0.03;
 
         // Rejoin normal behavior near the destination
-        if (prog > 0.92 || !posEmpty) this.trA[i] = 0;
+        if (prog >= 0.999 || !posEmpty) this.trA[i] = 0;
         else debugTransport++;
 
       } else {
@@ -816,7 +828,9 @@ function draw() {
   const level = autoRun ? 0.09 : (micRunning ? amp.getLevel() : 0);
   if (autoRun) t += AUTO_SPEED;
   else if (micRunning && level > MIC_THRESHOLD) t += map(level, MIC_THRESHOLD, 0.2, 0.01, 0.05, true);
-  tAdvanced = t !== _prevT; _prevT = t;
+  tDelta = t - _prevT;
+  tAdvanced = tDelta !== 0;
+  _prevT = t;
 
   Sampler.resetFrameStats();
   Acts.update();
