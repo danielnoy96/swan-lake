@@ -13,6 +13,12 @@ const MIC_THRESHOLD = 0.03;
 const AUTO_SPEED = 0.03;
 const INTERP_SHARPNESS = 1.6; // >1 reduces "double exposure" trails during motion
 
+// Density contrast (tune): higher GAMMA -> stronger emphasis on bright areas (more contrast)
+const DENSITY_THR = 0.07;
+const DENSITY_GAMMA = 1.25;
+const DENSITY_GREY_LIFT = 0.10;
+const DENSITY_SMOOTH = 0.28;
+
 // "Void travel" cleanup: when particles must cross empty (alpha=0) areas, guide them along 3 clean lanes
 // (1 straight + 2 arced) between their current position and their destination.
 const VOID_MIN_DIST_CELLS = 4.0;  // only engage lanes if far enough (in cell units)
@@ -164,9 +170,10 @@ const Sampler = {
 
     // Convert per-cell brightness to raw weights, normalized per-frame so gray-heavy frames still fill.
     // Then systematic-resample to exactly N particles.
-    const BR_THR = 0.06;     // threshold in normalized brightness space (0..1)
-    const GAMMA = 0.75;      // <1 boosts midtones so grays get particles
-    const GREY_LIFT = 0.22;  // extra linear weight to further support midtones
+    const BR_THR = DENSITY_THR;           // threshold in normalized brightness space (0..1)
+    const GAMMA = DENSITY_GAMMA;          // >1 increases contrast (bright areas get more particles)
+    const GREY_LIFT = DENSITY_GREY_LIFT;  // keep some midtone support
+    const SMOOTH = DENSITY_SMOOTH;        // neighbor smoothing (too high reduces contrast)
 
     this.mask.fill(0);
     let maxBr = 0;
@@ -212,7 +219,7 @@ const Sampler = {
             cnt++;
           }
         }
-        if (cnt > 0) this.tmp[i] = (this.weights[i] * 0.6) + (sum / cnt) * 0.4;
+        if (cnt > 0) this.tmp[i] = (this.weights[i] * (1 - SMOOTH)) + (sum / cnt) * SMOOTH;
       }
     }
     rawSum = 0;
