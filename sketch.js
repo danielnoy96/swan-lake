@@ -19,6 +19,44 @@ const DENSITY_GAMMA = 1.25;
 const DENSITY_GREY_LIFT = 0.10;
 const DENSITY_SMOOTH = 0.28;
 
+// Particle look (tune)
+const PARTICLE_SIZE = 4;
+const LIGHT_ALPHA = 140;
+const DARK_ALPHA = 70;
+
+// Color styling (per act)
+const ACT_COLORS = {
+  1: { bg: "#5F6E7C", hi: "#EFE9DD", lo: "#B8A76A" },
+  2: { bg: "#6B665E", hi: "#F5F6F4", lo: "#C7CCD2" },
+  3: { bg: "#121317", hi: "#4A1F2D", lo: "#7A2734" },
+};
+const ACT_FOCUS = {
+  1: { x: 0.52, y: 0.55 },
+  2: { x: 0.50, y: 0.54 },
+  3: { x: 0.52, y: 0.52 },
+};
+const ACT_STAIN = {
+  // Relative stain size (minor color) per act; act2 has more secondary color.
+  1: { size: 0.40, ox: -0.10, oy: 0.04, a: 0.55 },
+  2: { size: 0.72, ox: 0.12, oy: 0.06, a: 1.00 },
+  3: { size: 0.62, ox: 0.08, oy: -0.06, a: 1.00 },
+};
+let _scheme = { 1: null, 2: null, 3: null, 4: null };
+let _white = null;
+let _renderBg = null;
+let _renderHi = null;
+let _renderLo = null;
+let _renderSplit = 0;
+const COLOR_SPLIT = 0.45;
+let _renderTintA = 0;
+let _renderTintB = 0;
+let _renderFx = 0, _renderFy = 0;
+let _renderCoreR2 = 0, _renderOuterR2 = 0;
+let _renderStainX = 0, _renderStainY = 0;
+let _renderStainR = 0;
+let _renderMaxD = 1;
+let _colorAmt = 0;
+
 // "Void travel" cleanup: when particles must cross empty (alpha=0) areas, guide them along 3 clean lanes
 // (1 straight + 2 arced) between their current position and their destination.
 const VOID_MIN_DIST_CELLS = 4.0;  // only engage lanes if far enough (in cell units)
@@ -38,6 +76,18 @@ let catchUp = 0;
 let debugMeanCellDist = 0;
 let debugTransport = 0;
 let actFrames = { 1: [], 2: [], 3: [], 4: [] };
+
+function initColorSchemes() {
+  _white = color(255, 255, 255);
+  for (let a of ACTS) {
+    const base = ACT_COLORS[a] || ACT_COLORS[1];
+    _scheme[a] = { bg: color(base.bg), hi: color(base.hi), lo: color(base.lo) };
+  }
+}
+function schemeForAct(a) { return _scheme[a] || _scheme[1]; }
+function withAlpha(c, a) { return color(red(c), green(c), blue(c), a); }
+function focusForAct(a) { return ACT_FOCUS[a] || ACT_FOCUS[1]; }
+function stainForAct(a) { return ACT_STAIN[a] || ACT_STAIN[1]; }
 
 let COLS = 1, ROWS = 1, CELLS = 1;
 let gridX0 = 0, gridY0 = 0;
@@ -686,7 +736,58 @@ const Particles = {
   },
   draw() {
     noStroke();
-    for (let i = 0; i < N; i++) { this.kind[i] ? fill(0, 210) : fill(255, 235); circle(this.x[i], this.y[i], 2.5); }
+    // Base: always white lights (additive)
+    blendMode(ADD);
+    fill(255, 255, 255, LIGHT_ALPHA);
+    for (let i = 0; i < N; i++) circle(this.x[i], this.y[i], PARTICLE_SIZE);
+
+    // Color overlay is *localized* (grouped) around a focus point.
+    // Use normal alpha blending so tint shows over white (ADD would clamp to white).
+    if (_renderTintA > 0.5) {
+      blendMode(BLEND);
+      const fx = _renderFx, fy = _renderFy;
+      const outer2 = _renderOuterR2;
+      const sx = _renderStainX, sy = _renderStainY;
+      const stainR = _renderStainR;
+      const maxD = max(1, _renderMaxD | 0);
+      const edgeFreq = 0.010;
+
+      // Majority tint: one calm "wash" over the focus region (no contouring by density)
+      const aWash = _renderTintA | 0;
+      fill(red(_renderHi), green(_renderHi), blue(_renderHi), aWash);
+      for (let i = 0; i < N; i++) {
+        const dx = this.x[i] - fx, dy = this.y[i] - fy;
+        const d2 = dx * dx + dy * dy;
+        if (d2 <= outer2) circle(this.x[i], this.y[i], PARTICLE_SIZE);
+      }
+
+      // Minority tint: a single "stain" blob sitting on top of the wash (irregular edge via noise).
+      const aStain = _renderTintB | 0;
+      if (aStain > 0) {
+        fill(red(_renderLo), green(_renderLo), blue(_renderLo), aStain);
+        for (let i = 0; i < N; i++) {
+          const dx0 = this.x[i] - fx, dy0 = this.y[i] - fy;
+          const d0 = dx0 * dx0 + dy0 * dy0;
+          if (d0 > outer2) continue;
+
+          const dx = this.x[i] - sx, dy = this.y[i] - sy;
+          const d = sqrt(dx * dx + dy * dy);
+          if (d > stainR * 1.35) continue;
+
+          // Rough edge: low-frequency noise in world space
+          const n = noise(this.x[i] * edgeFreq, this.y[i] * edgeFreq, (Acts.act || 1) * 10.0);
+
+          // Density influence (subtle): lower-density areas accept the stain slightly more
+          const den = (this.desired[this.cell[i]] | 0) / maxD; // 0..1
+          const denK = lerp(1.15, 0.85, den);
+
+          const edge = stainR * denK * (0.82 + 0.30 * n);
+          if (d <= edge) circle(this.x[i], this.y[i], PARTICLE_SIZE);
+        }
+      }
+    }
+
+    blendMode(BLEND);
   },
 };
 
@@ -829,6 +930,7 @@ function setup() {
   createCanvas(windowWidth, windowHeight);
   mic = new p5.AudioIn();
   amp = new p5.Amplitude();
+  initColorSchemes();
   resizeGrid();
   Sampler.init();
   Particles.resizeBins();
@@ -868,6 +970,7 @@ function setup() {
 
 function windowResized() {
   resizeCanvas(windowWidth, windowHeight);
+  initColorSchemes();
   resizeGrid();
   Particles.resizeBins();
   Particles.init();
@@ -875,8 +978,10 @@ function windowResized() {
 }
 
 function draw() {
-  background(0);
-  if (!audioStarted && !autoRun) return drawStartScreen();
+  if (!audioStarted && !autoRun) {
+    background(0);
+    return drawStartScreen();
+  }
 
   const level = autoRun ? 0.09 : (micRunning ? amp.getLevel() : 0);
   if (autoRun) t += AUTO_SPEED;
@@ -887,6 +992,58 @@ function draw() {
 
   Sampler.resetFrameStats();
   Acts.update();
+
+  // Background per act (blend during transitions)
+  const s0 = schemeForAct(Acts.act);
+  const s1 = schemeForAct(Acts.next);
+  const pBg = Acts.mode === "TRANSITION" ? constrain((t - Acts.transitionStartT) / max(1e-6, TRANSITION_DURATION), 0, 1) : 0;
+  const bgTarget = Acts.mode === "TRANSITION" ? lerpColor(s0.bg, s1.bg, pBg) : s0.bg;
+
+  // Particles start white; more mic level => more scheme color.
+  // Easier to reach full color (mic levels vary a lot by device/browser).
+  const targetAmt = pow(constrain(map(level, 0.004, 0.045, 0, 1, true), 0, 1), 0.85);
+  // Slow, calm response (attack faster than release to avoid flashiness).
+  const k = targetAmt > _colorAmt ? 0.06 : 0.02;
+  _colorAmt += (targetAmt - _colorAmt) * k;
+  const colorAmt = _colorAmt;
+
+  _renderBg = lerpColor(color(0), bgTarget, colorAmt);
+  background(_renderBg);
+  _renderHi = lerpColor(_white, s0.hi, colorAmt);
+  _renderLo = lerpColor(_white, s0.lo, colorAmt);
+  _renderSplit = 0;
+
+  // Grouped tint region parameters (same for ACT/TRANSITION; palette above is updated per branch as needed)
+  const f0 = focusForAct(Acts.act);
+  const f1 = focusForAct(Acts.next);
+  const fp = Acts.mode === "TRANSITION" ? pBg : 0;
+  _renderFx = lerp(width * f0.x, width * f1.x, fp);
+  _renderFy = lerp(height * f0.y, height * f1.y, fp);
+  const minD = min(width, height);
+  const coreR = minD * (0.08 + 0.16 * colorAmt);
+  const outerR = coreR * 1.65;
+  _renderCoreR2 = coreR * coreR;
+  _renderOuterR2 = outerR * outerR;
+  // Single stain params (blended by act during transitions)
+  const st0 = stainForAct(Acts.act);
+  const st1 = stainForAct(Acts.next);
+  // Wash vs stain alpha (stain is stronger but smaller)
+  const stA0 = st0.a == null ? 1 : st0.a;
+  const stA1 = st1.a == null ? 1 : st1.a;
+  const stainAlphaScale = lerp(stA0, stA1, fp);
+  _renderTintA = 110 * colorAmt;
+  _renderTintB = 185 * colorAmt * stainAlphaScale;
+
+  // Stain center/radius
+  const stSize = lerp(st0.size, st1.size, fp);
+  const stOx = lerp(st0.ox, st1.ox, fp);
+  const stOy = lerp(st0.oy, st1.oy, fp);
+  const drift = outerR * 0.08 * colorAmt;
+  const ndx = (noise(100 + Acts.act * 7.1, t * 0.06) - 0.5) * 2;
+  const ndy = (noise(200 + Acts.act * 9.3, t * 0.06) - 0.5) * 2;
+  _renderStainX = _renderFx + outerR * stOx + ndx * drift;
+  _renderStainY = _renderFy + outerR * stOy + ndy * drift;
+  _renderStainR = outerR * stSize;
 
   let desiredSum = 0, moved = 0;
   let mismatch = 0;
@@ -908,6 +1065,14 @@ function draw() {
           Particles.setWalkFromCounts(counts, _off1.off, _off1.off);
         }
         for (let i = 0; i < CELLS; i++) desiredSum += Particles.desired[i];
+
+        // Compute split and per-act colors (hi/lo) after desired is ready.
+        let maxD = 1;
+        for (let i = 0; i < CELLS; i++) { const d = Particles.desired[i] | 0; if (d > maxD) maxD = d; }
+        _renderMaxD = maxD;
+        _renderSplit = (maxD * COLOR_SPLIT) | 0;
+        // _renderHi/_renderLo already computed above as lerp from white, just keep alpha for overlay via _renderTintA/B
+
         if (tAdvanced) {
           mismatch = estimateMismatch();
           debugMeanCellDist = estimateMeanCellDist();
@@ -933,6 +1098,16 @@ function draw() {
     const p = constrain((t - Acts.transitionStartT) / max(1e-6, TRANSITION_DURATION), 0, 1);
     const stageA = p < DANCE_PORTION;
     const s = stageA ? p / max(1e-6, DANCE_PORTION) : (p - DANCE_PORTION) / max(1e-6, 1 - DANCE_PORTION);
+
+    // Blend particle palette during transition (still starts from white).
+    const hiBlend = lerpColor(s0.hi, s1.hi, s);
+    const loBlend = lerpColor(s0.lo, s1.lo, s);
+    _renderHi = lerpColor(_white, hiBlend, colorAmt);
+    _renderLo = lerpColor(_white, loBlend, colorAmt);
+    let maxD = 1;
+    for (let i = 0; i < CELLS; i++) { const d = Particles.desired[i] | 0; if (d > maxD) maxD = d; }
+    _renderMaxD = maxD;
+    _renderSplit = (maxD * COLOR_SPLIT) | 0;
 
     if (tAdvanced) {
       if (stageA) {
