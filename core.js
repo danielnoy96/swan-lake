@@ -1,14 +1,54 @@
 ﻿// Particle-only p5.js (mobile-friendly). PNG frames are sampled offscreen only.
 
 // ---- Config ----
+// Runtime error overlay (helps when the dev server keeps reloading / canvas stays black).
+(() => {
+  if (window.__fatalOverlayInstalled) return;
+  window.__fatalOverlayInstalled = true;
+  const el = document.createElement("pre");
+  el.id = "fatal-overlay";
+  el.style.cssText = [
+    "position:fixed",
+    "left:12px",
+    "top:12px",
+    "right:12px",
+    "max-height:45vh",
+    "overflow:auto",
+    "z-index:9999",
+    "padding:10px 12px",
+    "border-radius:10px",
+    "background:rgba(0,0,0,0.78)",
+    "color:#ffb3b3",
+    "font:12px/1.35 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace",
+    "white-space:pre-wrap",
+    "display:none",
+  ].join(";");
+  document.addEventListener("DOMContentLoaded", () => document.body.appendChild(el));
+  const show = (msg) => {
+    try {
+      window.__fatalError = msg;
+      el.textContent = msg;
+      el.style.display = "block";
+    } catch (_) {}
+  };
+  window.addEventListener("error", (e) => {
+    const msg = String(e?.message || e || "Unknown error");
+    const src = e?.filename ? `\n@ ${e.filename}:${e.lineno || 0}:${e.colno || 0}` : "";
+    show(`[ERROR]\n${msg}${src}`);
+  });
+  window.addEventListener("unhandledrejection", (e) => {
+    const msg = String(e?.reason?.stack || e?.reason || "Unhandled rejection");
+    show(`[REJECTION]\n${msg}`);
+  });
+})();
 const ACTS = [1, 2, 3, 4];
-const SRC_COUNT = { 1: 192, 2: 172, 3: 192, 4: 0 };
+const SRC_COUNT = { 1: 192, 2: 172, 3: 192, 4: 192 };
 const FPS_EFFECTIVE = { 1: 24, 2: 24, 3: 24, 4: 24 }; // source frames per sound-second
 
 const TARGET_W = 160, TARGET_H = 284;
 const CELL_SIZE = 18; // square grid size (px) (tune: larger -> fewer cells -> denser silhouettes)
 const N = 4200, BLACK_PCT = 0.1;
-const TRANSITION_DURATION = 2.0, DANCE_PORTION = 0.6;
+const TRANSITION_DURATION = 2.0, DANCE_PORTION = 0.78;
 const MIC_THRESHOLD = 0.03;
 const AUTO_SPEED = 0.03;
 const INTERP_SHARPNESS = 1.6; // >1 reduces "double exposure" trails during motion
@@ -20,8 +60,8 @@ const DENSITY_GREY_LIFT = 0.10;
 const DENSITY_SMOOTH = 0.28;
 
 // Particle look (tune)
-const PARTICLE_SIZE = 10;
-const LIGHT_ALPHA = 90;
+const PARTICLE_SIZE = 3;
+const LIGHT_ALPHA = 180;
 
 
 // "Void travel" cleanup: when particles must cross empty (alpha=0) areas, guide them along 3 clean lanes
@@ -42,7 +82,6 @@ let autoRun = false;
 let catchUp = 0;
 let debugMeanCellDist = 0;
 let debugTransport = 0;
-let actFrames = { 1: [], 2: [], 3: [], 4: [] };
 
 let COLS = 1, ROWS = 1, CELLS = 1;
 let gridX0 = 0, gridY0 = 0;
@@ -86,7 +125,7 @@ function nextActWithFrames(fromAct) {
   let a = fromAct;
   for (let k = 0; k < ACTS.length; k++) {
     a++; if (a > 4) a = 1;
-    if ((actFrames[a] || []).length > 0) return a;
+    if ((SRC_COUNT[a] || 0) > 0) return a;
   }
   return fromAct;
 }

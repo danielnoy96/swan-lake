@@ -10,6 +10,10 @@ const Sampler = {
   visited: new Uint8Array(1),
   stack: new Int32Array(1),
   cache: { 1: null, 2: null, 3: null, 4: null },
+  // On-demand loader (avoids preloading hundreds of PNGs -> crashes/reload loops on mobile)
+  queue: [],
+  inFlight: 0,
+  maxInFlight: 2,
   hits: 0, misses: 0, hitsF: 0, missesF: 0,
   init() {
     this.g = createGraphics(this.w, this.h);
@@ -26,11 +30,20 @@ const Sampler = {
     this.stack = new Int32Array(CELLS);
   },
   resetFrameStats() { this.hitsF = 0; this.missesF = 0; },
-  resetAllCaches() { for (let a of ACTS) this.cache[a] = null; },
+  resetAllCaches() {
+    for (let a of ACTS) this.cache[a] = null;
+    this.queue.length = 0;
+  },
   ensureActCache(a, cycle) {
     const need = cycle * CELLS, cur = this.cache[a];
     if (cur && cur.cycle === cycle && cur.counts.length === need) return;
-    this.cache[a] = { cycle, done: new Uint8Array(cycle), counts: new Uint16Array(need) };
+    this.cache[a] = {
+      cycle,
+      done: new Uint8Array(cycle),
+      loading: new Uint8Array(cycle),
+      failed: new Uint8Array(cycle),
+      counts: new Uint16Array(need),
+    };
   },
   _weightAt(px) {
     const a = this.g.pixels[px + 3] / 255; if (a <= 0.05) return 0;
@@ -145,15 +158,82 @@ const Sampler = {
       outCounts[i]++;
     }
   },
+  _path(a, idx) {
+    // Keep filenames consistent with existing export: actX_00000.png ...
+    return `assets/act${a}/act${a}_${nf(idx, 5)}.png`;
+  },
+  queueLen() { return this.queue.length; },
+  ready(a) {
+    const c = this.cache[a];
+    if (!c) return 0;
+    let n = 0;
+    for (let i = 0; i < c.done.length; i++) n += c.done[i] ? 1 : 0;
+    return n;
+  },
+  _pump() {
+    while (this.inFlight < this.maxInFlight && this.queue.length > 0) {
+      const job = this.queue.shift();
+      const a = job.a, idx = job.idx, cycle = job.cycle;
+      const c = this.cache[a];
+      if (!c || c.cycle !== cycle) continue;
+      if (idx < 0 || idx >= c.cycle) continue;
+      if (c.done[idx] || c.failed[idx]) { c.loading[idx] = 0; continue; }
+
+      this.inFlight++;
+      const path = this._path(a, idx);
+      loadImage(
+        path,
+        (img) => {
+          try {
+            const cc = this.cache[a];
+            if (!cc || cc.cycle !== cycle) return;
+            const off = idx * CELLS;
+            this._compute(img, cc.counts.subarray(off, off + CELLS));
+            cc.done[idx] = 1;
+          } catch (e) {
+            try {
+              const cc = this.cache[a];
+              if (cc && cc.cycle === cycle) cc.failed[idx] = 1;
+              console.warn("[Sampler] compute failed", a, idx, e);
+            } catch (_) {}
+          } finally {
+            try {
+              const cc = this.cache[a];
+              if (cc && cc.cycle === cycle) cc.loading[idx] = 0;
+            } catch (_) {}
+            this.inFlight--;
+            this._pump();
+          }
+        },
+        (err) => {
+          try {
+            const cc = this.cache[a];
+            if (cc && cc.cycle === cycle) {
+              cc.failed[idx] = 1;
+              cc.loading[idx] = 0;
+            }
+            console.warn("[Sampler] loadImage failed", path, err);
+          } catch (_) {}
+          this.inFlight--;
+          this._pump();
+        }
+      );
+    }
+  },
   ensure(a, idx, cycle, outOff) {
     this.ensureActCache(a, cycle);
     const c = this.cache[a]; if (!c || idx < 0 || idx >= c.cycle) return false;
-    if (c.done[idx]) { this.hits++; this.hitsF++; outOff.off = idx * CELLS; return true; }
-    const img = (actFrames[a] || [])[idx] || null; if (!img) return false;
-    this.misses++; this.missesF++;
     const off = idx * CELLS;
-    this._compute(img, c.counts.subarray(off, off + CELLS));
-    c.done[idx] = 1; outOff.off = off; return true;
+    outOff.off = off;
+    if (c.done[idx]) { this.hits++; this.hitsF++; return true; }
+    this.misses++; this.missesF++;
+    if (c.failed[idx]) return false;
+    if (!c.loading[idx]) {
+      c.loading[idx] = 1;
+      this.queue.push({ a, idx, cycle });
+      this._pump();
+    }
+    return false;
   },
   counts(a) { return this.cache[a] ? this.cache[a].counts : null; },
 };

@@ -1,10 +1,11 @@
 ﻿// ---- p5 lifecycle ----
+// Typography overlay (top layer)
+let typographyImg = null;
+const typographyRect = { x: 0, y: 0, w: 0, h: 0 };
+
 function preload() {
-  for (let a of ACTS) {
-    const count = SRC_COUNT[a] || 0;
-    actFrames[a] = new Array(count);
-    for (let i = 0; i < count; i++) actFrames[a][i] = loadImage(`assets/act${a}/act${a}_${nf(i, 5)}.png`);
-  }
+  // Only typography is preloaded (tiny). Act frames are loaded on-demand in Sampler.ensure().
+  typographyImg = loadImage("assets/typography/swan_lake.png");
 }
 
 function setup() {
@@ -47,6 +48,8 @@ function setup() {
     if (autoRun) audioStarted = true;
     btnAuto.html(autoRun ? "Auto: ON" : "Auto: OFF");
   });
+
+  updateTypographyRect();
 }
 
 function windowResized() {
@@ -56,12 +59,26 @@ function windowResized() {
   Particles.resizeBins();
   Particles.init();
   Sampler.resetAllCaches();
+  updateTypographyRect();
 }
 
 function draw() {
+  if (window.__fatalError) {
+    background(0);
+    fill(255);
+    noStroke();
+    textAlign(LEFT, TOP);
+    textSize(12);
+    text(String(window.__fatalError), 12, 12, width - 24, height - 24);
+    noLoop();
+    return;
+  }
+
   if (!audioStarted && !autoRun) {
     background(0);
-    return drawStartScreen();
+    drawStartScreen();
+    drawTypographyOverlay();
+    return;
   }
 
   const level = autoRun ? 0.09 : (micRunning ? amp.getLevel() : 0);
@@ -71,8 +88,9 @@ function draw() {
   tAdvanced = tDelta !== 0;
   _prevT = t;
 
-  Sampler.resetFrameStats();
-  Acts.update();
+  try {
+    Sampler.resetFrameStats();
+    Acts.update();
 
   Style.update(Acts, level);
   background(Render.bg);
@@ -134,25 +152,49 @@ function draw() {
 
     if (tAdvanced) {
       if (stageA) {
+        // Prep next-act cache early so Stage B doesn't "stall" on first loadPixels() call.
+        if (!Acts.prepDone) {
+          const a = Acts.next;
+          const cycle = SRC_COUNT[a] || 0;
+          if (cycle > 0) {
+            const idx0 = 0;
+            const idx1 = cycle > 1 ? 1 : 0;
+            const ok0 = Sampler.ensure(a, idx0, cycle, _off0);
+            const ok1 = Sampler.ensure(a, idx1, cycle, _off1);
+            if (ok0 && ok1) Acts.prepDone = true;
+          }
+        }
         Particles.dance(level, s);
       } else {
         const a = Acts.next;
-        const loaded = (actFrames[a] || []).length;
-        const cycle = min(loaded, SRC_COUNT[a] || loaded);
+        const cycle = SRC_COUNT[a] || 0;
         if (cycle > 0) {
           const ok0 = Sampler.ensure(a, 0, cycle, _off0);
           const ok1 = Sampler.ensure(a, 1 % cycle, cycle, _off1);
-          if (ok0 && ok1) {
+          if (ok0 || ok1) {
             const counts = Sampler.counts(a);
-            Particles.setDesired(counts, _off0.off, _off1.off, s);
-            Particles.setWalkFromCounts(counts, _off0.off, _off1.off);
+            if (ok0 && ok1) {
+              Particles.setDesired(counts, _off0.off, _off1.off, s);
+              Particles.setWalkFromCounts(counts, _off0.off, _off1.off);
+            } else if (ok0) {
+              Particles.setDesired(counts, _off0.off, _off0.off, 0);
+              Particles.setWalkFromCounts(counts, _off0.off, _off0.off);
+            } else {
+              Particles.setDesired(counts, _off1.off, _off1.off, 0);
+              Particles.setWalkFromCounts(counts, _off1.off, _off1.off);
+            }
             for (let i = 0; i < CELLS; i++) desiredSum += Particles.desired[i];
             debugMeanCellDist = estimateMeanCellDist();
             computeDeficitHotspots();
-            moved += Particles.rebalancePasses(7);
-            if (p > 0.74) catchUpNudge(0.25);
-            Particles.updateInsideCells(level, map(p, 0.88, 1.0, 0, 1, true), 0.0, 0.65);
+            // Coalesce with the SAME pace as the flight: fewer reassign passes, softer catch-up, no hard snap.
+            moved += Particles.rebalancePasses(4);
+            if (p > (DANCE_PORTION + 0.10)) catchUpNudge(0.12);
+            const snap01 = map(s, 0.70, 1.0, 0, 0.25, true);
+            Particles.updateInsideCells(level, snap01, 0.0, 0.18);
             Particles.separate(0.020, 3.2);
+          } else {
+            // If frames aren't ready yet, keep moving instead of freezing.
+            Particles.dance(level, 1.0);
           }
         }
       }
@@ -160,13 +202,41 @@ function draw() {
     Particles.draw();
   }
 
-  if (debugOn) drawDebug(level, desiredSum, moved, mismatch);
-  if (showGrid) drawGridOverlay();
+    if (debugOn) drawDebug(level, desiredSum, moved, mismatch);
+    if (showGrid) drawGridOverlay();
+    drawTypographyOverlay();
+  } catch (e) {
+    window.__fatalError = e?.stack || String(e);
+    background(0);
+    fill(255);
+    noStroke();
+    textAlign(LEFT, TOP);
+    textSize(12);
+    text(String(window.__fatalError), 12, 12, width - 24, height - 24);
+    noLoop();
+  }
 }
 
 function drawStartScreen() {
   fill(255); noStroke(); textAlign(CENTER, CENTER); textSize(18);
   text("Tap to activate microphone\nSound drives the animation", width / 2, height / 2);
+}
+
+function updateTypographyRect() {
+  if (!typographyImg || !typographyImg.width) return;
+  fitRect(typographyImg.width, typographyImg.height, width, height, typographyRect);
+}
+
+function drawTypographyOverlay() {
+  if (!typographyImg || !typographyImg.width) return;
+  push();
+  // SCREEN makes the black areas invisible while keeping the white typography.
+  blendMode(SCREEN);
+  imageMode(CORNER);
+  tint(255, 215);
+  image(typographyImg, typographyRect.x, typographyRect.y, typographyRect.w, typographyRect.h);
+  blendMode(BLEND);
+  pop();
 }
 
 function mousePressed() {
@@ -178,11 +248,12 @@ function mousePressed() {
 function keyPressed() { if (key === "d" || key === "D") debugOn = !debugOn; }
 
 function drawDebug(level, desiredSum, moved, mismatch) {
-  const loaded = (actFrames[Acts.act] || []).length;
+  const ready = Sampler.ready ? Sampler.ready(Acts.act) : 0;
+  const q = Sampler.queueLen ? Sampler.queueLen() : 0;
   push(); noStroke(); fill(0, 160); rect(10, 10, 470, 106, 8); fill(255); textSize(12); textAlign(LEFT, TOP);
   text(`mode:${Acts.mode} act:${Acts.act} next:${Acts.next}  t:${t.toFixed(2)} el:${Acts.elapsed.toFixed(2)} dur:${Acts.dur.toFixed(2)} fps:${Acts.fps}`, 18, 16);
-  text(`cycle:${Acts.cycle} SRC:${SRC_COUNT[Acts.act] || 0} loaded:${loaded}  src0/src1:${Acts.src0}/${Acts.src1} a:${Acts.alpha.toFixed(2)} cycles:${Acts.cycles}`, 18, 32);
-  text(`grid:${COLS}x${ROWS} desiredSum:${desiredSum} moved:${moved} mismatch:${mismatch} meanDist:${debugMeanCellDist.toFixed(1)} catchUp:${catchUp.toFixed(2)} hot:${_hotCount} lane:${debugTransport}  cache(h/m):${Sampler.hitsF}/${Sampler.missesF} total:${Sampler.hits}/${Sampler.misses} level:${level.toFixed(3)}`, 18, 48);
+  text(`cycle:${Acts.cycle} SRC:${SRC_COUNT[Acts.act] || 0} ready:${ready}  src0/src1:${Acts.src0}/${Acts.src1} a:${Acts.alpha.toFixed(2)} cycles:${Acts.cycles}`, 18, 32);
+  text(`grid:${COLS}x${ROWS} desiredSum:${desiredSum} moved:${moved} mismatch:${mismatch} meanDist:${debugMeanCellDist.toFixed(1)} catchUp:${catchUp.toFixed(2)} hot:${_hotCount} lane:${debugTransport}  cache(h/m):${Sampler.hitsF}/${Sampler.missesF} total:${Sampler.hits}/${Sampler.misses} inFlight:${Sampler.inFlight || 0} q:${q} level:${level.toFixed(3)}`, 18, 48);
   text(`imagesDrawnToCanvas:${imagesDrawnToCanvas}`, 18, 64);
   pop();
 }

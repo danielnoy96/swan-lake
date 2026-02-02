@@ -1,10 +1,9 @@
 ﻿const Acts = {
-  mode: "ACT", act: 1, next: 2, actStartT: 0, transitionStartT: 0,
+  mode: "ACT", act: 1, next: 2, actStartT: 0, transitionStartT: 0, prepDone: false,
   elapsed: 0, dur: 0, fps: 24, cycle: 0, frameFloat: 0, idx: 0, src0: 0, src1: 0, alpha: 0, cycles: 0,
   compute() {
-    const loaded = (actFrames[this.act] || []).length;
-    const src = SRC_COUNT[this.act] || loaded;
-    this.cycle = min(loaded, src);
+    const src = SRC_COUNT[this.act] || 0;
+    this.cycle = src;
     this.fps = FPS_EFFECTIVE[this.act] || 24;
     this.elapsed = max(0, t - this.actStartT);
     this.frameFloat = this.elapsed * this.fps;
@@ -21,6 +20,9 @@
     this.mode = "TRANSITION";
     this.transitionStartT = t;
     this.next = nextActWithFrames(this.act);
+    this.prepDone = false;
+    // Give the flock an immediate "take off" so Stage A fills the whole space.
+    if (typeof Particles !== "undefined" && Particles && Particles.onTransitionStart) Particles.onTransitionStart();
   },
   endTransition() {
     this.act = this.next;
@@ -33,7 +35,7 @@
         const counts = Sampler.counts(this.act);
         Particles.setDesired(counts, _off0.off, _off0.off, 0);
         Particles.setWalkFromCounts(counts, _off0.off, _off0.off);
-        Particles.hardRetargetToDesired();
+        Particles.softRetargetToDesired();
       }
     }
   },

@@ -2,8 +2,9 @@
   x: new Float32Array(N), y: new Float32Array(N), vx: new Float32Array(N), vy: new Float32Array(N),
   kind: new Uint8Array(N), cell: new Uint16Array(N), u: new Float32Array(N), v: new Float32Array(N),
   order: new Uint16Array(N),
-  sz: new Float32Array(N),
-  sprite: null,
+  // Transition dance roam targets (full-canvas flight)
+  roamX: new Float32Array(N),
+  roamY: new Float32Array(N),
   cellCounts: new Uint16Array(1), desired: new Uint16Array(1),
   // walkable region = union of src0 and src1 (prevents routing through holes that are empty in both frames)
   walk: new Uint8Array(1),
@@ -18,6 +19,8 @@
   trAmp: new Float32Array(N),
   // spatial hash
   binSize: 6, binsX: 1, binsY: 1, binHead: new Int32Array(1), binNext: new Int32Array(N),
+  // coarse hash for "bird flock" dance (larger bins => cheap neighbor queries)
+  fBinSize: 24, fBinsX: 1, fBinsY: 1, fHead: new Int32Array(1), fNext: new Int32Array(N),
 
   realloc() {
     this.cellCounts = new Uint16Array(CELLS);
@@ -28,13 +31,14 @@
     this.binsX = max(1, ceil(width / this.binSize));
     this.binsY = max(1, ceil(height / this.binSize));
     this.binHead = new Int32Array(this.binsX * this.binsY);
+
+    this.fBinsX = max(1, ceil(width / this.fBinSize));
+    this.fBinsY = max(1, ceil(height / this.fBinSize));
+    this.fHead = new Int32Array(this.fBinsX * this.fBinsY);
   },
   init() {
     if (this.cellCounts.length !== CELLS) this.realloc();
     this.cellCounts.fill(0);
-
-    // Soft "light" sprite (created once per init; never inside draw).
-    this.sprite = makeLightSprite(64);
     const cx = width * 0.5, cy = height * 0.5, R = min(width, height) * 0.22;
     for (let i = 0; i < N; i++) {
       this.order[i] = i;
@@ -42,7 +46,6 @@
       this.x[i] = cx + cos(ang) * rad; this.y[i] = cy + sin(ang) * rad;
       this.vx[i] = random(-0.6, 0.6); this.vy[i] = random(-0.6, 0.6);
       this.kind[i] = random() < BLACK_PCT ? 1 : 0;
-      this.sz[i] = PARTICLE_SIZE * (0.85 + 0.55 * hash01(i * 33 + 7));
       const c = posToCell(this.x[i], this.y[i]);
       this.cell[i] = c; this.cellCounts[c] = min(65535, this.cellCounts[c] + 1);
       this.u[i] = random(); this.v[i] = random();
@@ -196,6 +199,22 @@
       this.x[i] = ox + this.u[i] * cellW; this.y[i] = oy + this.v[i] * cellH;
     }
   },
+  softRetargetToDesired() {
+    // Same deterministic reassignment as hardRetargetToDesired(), but WITHOUT teleporting positions.
+    // This keeps motion continuous at act boundaries.
+    this.cellCounts.set(this.desired);
+    let cell = 0, cum = this.desired[0] | 0;
+    for (let oi = 0; oi < N; oi++) {
+      const i = this.order[oi], target = oi + 0.5;
+      while (cum <= target && cell < CELLS - 1) { cell++; cum += this.desired[cell] | 0; }
+      this.cell[i] = cell;
+      const h = (i + 1) * 73856093 ^ (cell + 1) * 19349663;
+      this.u[i] = hash01(h); this.v[i] = hash01(h ^ 0x68bc21eb);
+      this.trA[i] = 0;
+      this.vx[i] *= 0.35;
+      this.vy[i] *= 0.35;
+    }
+  },
   _buildBins() {
     this.binHead.fill(-1);
     for (let i = 0; i < N; i++) {
@@ -203,6 +222,15 @@
       const by = constrain((this.y[i] / this.binSize) | 0, 0, this.binsY - 1);
       const b = by * this.binsX + bx;
       this.binNext[i] = this.binHead[b]; this.binHead[b] = i;
+    }
+  },
+  _buildFlockBins() {
+    this.fHead.fill(-1);
+    for (let i = 0; i < N; i++) {
+      const bx = constrain((this.x[i] / this.fBinSize) | 0, 0, this.fBinsX - 1);
+      const by = constrain((this.y[i] / this.fBinSize) | 0, 0, this.fBinsY - 1);
+      const b = by * this.fBinsX + bx;
+      this.fNext[i] = this.fHead[b]; this.fHead[b] = i;
     }
   },
   separate(strength, radius) {
@@ -414,37 +442,129 @@
     }
   },
   dance(level, s) {
-    const flow = 0.20 + map(level, 0, 0.2, 0, 0.65, true);
-    const swirlBase = 0.85 + map(level, 0, 0.2, 0, 1.15, true);
-    const driftX = lerp(0.25, 0.05, s), driftY = lerp(-0.05, -0.15, s);
-    const damp = 0.92, maxSpd = 5.8, cx = width * 0.5, cy = height * 0.5;
+    // Shooting-star flock: a single directed formation (pack) that travels with a clear heading.
+    // We build an anisotropic "comet" formation around a moving head point.
+    const cx = width * 0.5, cy = height * 0.5;
+    const minD = min(width, height);
+
+    // Keep the head roaming far for most of Stage A, then start homing toward the next focus late.
+    const headBlend = map(s, 0.68, 1.0, 0, 0.90, true);
+    const baseT = t * (0.22 + 0.06 * s);
+    const hx0 = cx + sin(baseT * 0.9) * width * 0.46 + sin(baseT * 0.31 + 2.2) * width * 0.28;
+    const hy0 = cy + sin(baseT * 0.7 + 1.1) * height * 0.40 + sin(baseT * 0.27 - 0.7) * height * 0.26;
+    const hx = lerp(hx0, Render.fx || cx, headBlend);
+    const hy = lerp(hy0, Render.fy || cy, headBlend);
+
+    const baseT2 = (t + 0.03) * (0.22 + 0.06 * s);
+    const hx02 = cx + sin(baseT2 * 0.9) * width * 0.46 + sin(baseT2 * 0.31 + 2.2) * width * 0.28;
+    const hy02 = cy + sin(baseT2 * 0.7 + 1.1) * height * 0.40 + sin(baseT2 * 0.27 - 0.7) * height * 0.26;
+    const hx2 = lerp(hx02, Render.fx || cx, headBlend);
+    const hy2 = lerp(hy02, Render.fy || cy, headBlend);
+
+    let dirX = hx2 - hx;
+    let dirY = hy2 - hy;
+    const dirL = sqrt(dirX * dirX + dirY * dirY) + 1e-6;
+    dirX /= dirL; dirY /= dirL;
+    const perpX = -dirY;
+    const perpY = dirX;
+
+    // Formation geometry
+    const tailLen = minD * 0.78;
+    const tailW = minD * 0.10;
+
+    // Flight dynamics
+    const maxSpd = 14.5 + map(level, 0, 0.2, 0, 4.0, true);
+    const damp = 0.93;
+    const steer = 0.34 + s * 0.20;
+    const bankAmp = 0.55; // radians
+
+    // Early break-away from last silhouette region
+    const fx = Render.fx || cx;
+    const fy = Render.fy || cy;
+    const repR = minD * lerp(0.46, 0.22, s);
+    const repR2 = repR * repR;
+    const repW = (1 - s) * 1.35;
+
+    const margin = minD * 0.06;
+    const edgeW = 0.30;
+
+    strokeCap(ROUND); // keep points round during flight
+
     for (let i = 0; i < N; i++) {
-      const ang = noise(this.x[i] * 0.0021, this.y[i] * 0.0021, t * 0.35) * TWO_PI * 2.4;
-      const dx = this.x[i] - cx, dy = this.y[i] - cy, d = sqrt(dx * dx + dy * dy) + 0.001;
-      const swirl = swirlBase * constrain(1 - d / (min(width, height) * 0.55), 0, 1);
-      this.vx[i] += (cos(ang) * flow + driftX + (-dy / d) * swirl) * 0.18;
-      this.vy[i] += (sin(ang) * flow + driftY + (dx / d) * swirl) * 0.18;
-      this.vx[i] *= damp; this.vy[i] *= damp;
-      const spd = sqrt(this.vx[i] * this.vx[i] + this.vy[i] * this.vy[i]);
-      if (spd > maxSpd) { const k = maxSpd / max(0.001, spd); this.vx[i] *= k; this.vy[i] *= k; }
-      this.x[i] += this.vx[i]; this.y[i] += this.vy[i];
-      if (this.x[i] < 0) { this.x[i] = 0; this.vx[i] *= -0.25; } else if (this.x[i] > width) { this.x[i] = width; this.vx[i] *= -0.25; }
-      if (this.y[i] < 0) { this.y[i] = 0; this.vy[i] *= -0.25; } else if (this.y[i] > height) { this.y[i] = height; this.vy[i] *= -0.25; }
+      const x = this.x[i], y = this.y[i];
+      const vx = this.vx[i], vy = this.vy[i];
+
+      // Stable slot along the comet tail (bias toward the head so it reads as a pack)
+      const u = hash01((i + 1) * 2654435761);
+      const tpos = u * u; // more near head
+      const long = -tpos * tailLen;
+      const w = tailW * (0.25 + 0.75 * tpos);
+      const latBase = (hash01((i + 17) * 2246822519) - 0.5) * 2.0;
+      const lat = latBase * w;
+
+      // Bank/curve the whole formation a bit per-particle (bird-like arcs)
+      const ca = (noise(i * 0.019, t * 0.18) - 0.5) * 2.0 * bankAmp;
+      const cc = cos(ca), ss = sin(ca);
+      const bDirX = dirX * cc - dirY * ss;
+      const bDirY = dirX * ss + dirY * cc;
+      const bPerpX = -bDirY;
+      const bPerpY = bDirX;
+
+      // Desired position in the moving formation
+      const wig = (1 - tpos) * 10.0;
+      const wx = (noise(i * 0.013, 9.1, t * 0.42) - 0.5) * wig;
+      const wy = (noise(i * 0.017, 3.7, t * 0.42) - 0.5) * wig;
+      const tx = hx + bDirX * long + bPerpX * lat + wx;
+      const ty = hy + bDirY * long + bPerpY * lat + wy;
+
+      // Seek steering toward formation slot
+      let ax = (tx - x) * 0.010;
+      let ay = (ty - y) * 0.010;
+
+      // Early repulsion from old silhouette area
+      if (repW > 0) {
+        const dxF = x - fx, dyF = y - fy;
+        const dF2 = dxF * dxF + dyF * dyF;
+        if (dF2 < repR2) {
+          const dF = sqrt(dF2) + 1e-6;
+          const k = (1 - dF / repR) * repW * 0.9;
+          ax += (dxF / dF) * k;
+          ay += (dyF / dF) * k;
+        }
+      }
+
+      // Boundary steering
+      if (x < margin) ax += ((margin - x) / margin) * edgeW;
+      else if (x > width - margin) ax -= ((x - (width - margin)) / margin) * edgeW;
+      if (y < margin) ay += ((margin - y) / margin) * edgeW;
+      else if (y > height - margin) ay -= ((y - (height - margin)) / margin) * edgeW;
+
+      // Velocity-based steering (keeps smooth, controlled flight)
+      let nvx = vx + ax * steer;
+      let nvy = vy + ay * steer;
+      nvx *= damp; nvy *= damp;
+
+      const sp2 = nvx * nvx + nvy * nvy;
+      const ms2 = maxSpd * maxSpd;
+      if (sp2 > ms2) {
+        const k = maxSpd / sqrt(sp2);
+        nvx *= k; nvy *= k;
+      }
+
+      this.vx[i] = nvx;
+      this.vy[i] = nvy;
+      this.x[i] = x + nvx;
+      this.y[i] = y + nvy;
     }
   },
   draw() {
     noStroke();
-    const spr = this.sprite;
-    imageMode(CENTER);
     // Base: always white lights (additive)
     blendMode(ADD);
-    if (spr) {
-      tint(255, 255, 255, LIGHT_ALPHA);
-      for (let i = 0; i < N; i++) image(spr, this.x[i], this.y[i], this.sz[i], this.sz[i]);
-    } else {
-      fill(255, 255, 255, LIGHT_ALPHA);
-      for (let i = 0; i < N; i++) circle(this.x[i], this.y[i], this.sz[i]);
-    }
+    strokeCap(ROUND);
+    strokeWeight(PARTICLE_SIZE);
+    stroke(255, 255, 255, LIGHT_ALPHA);
+    for (let i = 0; i < N; i++) point(this.x[i], this.y[i]);
 
     // Color overlay is *localized* (grouped) around a focus point.
     // Use normal alpha blending so tint shows over white (ADD would clamp to white).
@@ -459,85 +579,76 @@
 
       // Majority tint: one calm "wash" over the focus region (no contouring by density)
       const aWash = Render.tintA | 0;
-      if (spr) {
-        tint(red(Render.hi), green(Render.hi), blue(Render.hi), aWash);
-        for (let i = 0; i < N; i++) {
-          const dx = this.x[i] - fx, dy = this.y[i] - fy;
-          const d2 = dx * dx + dy * dy;
-          if (d2 <= outer2) image(spr, this.x[i], this.y[i], this.sz[i], this.sz[i]);
-        }
-      } else {
-        fill(red(Render.hi), green(Render.hi), blue(Render.hi), aWash);
-        for (let i = 0; i < N; i++) {
-          const dx = this.x[i] - fx, dy = this.y[i] - fy;
-          const d2 = dx * dx + dy * dy;
-          if (d2 <= outer2) circle(this.x[i], this.y[i], this.sz[i]);
-        }
+      stroke(red(Render.hi), green(Render.hi), blue(Render.hi), aWash);
+      for (let i = 0; i < N; i++) {
+        const dx = this.x[i] - fx, dy = this.y[i] - fy;
+        const d2 = dx * dx + dy * dy;
+        if (d2 <= outer2) point(this.x[i], this.y[i]);
       }
 
       // Minority tint: a single "stain" blob sitting on top of the wash (irregular edge via noise).
       const aStain = Render.tintB | 0;
       if (aStain > 0) {
-        if (spr) {
-          tint(red(Render.lo), green(Render.lo), blue(Render.lo), aStain);
-          for (let i = 0; i < N; i++) {
-            const dx0 = this.x[i] - fx, dy0 = this.y[i] - fy;
-            const d0 = dx0 * dx0 + dy0 * dy0;
-            if (d0 > outer2) continue;
+        stroke(red(Render.lo), green(Render.lo), blue(Render.lo), aStain);
+        const stainMax2 = (stainR * 1.35) * (stainR * 1.35);
+        for (let i = 0; i < N; i++) {
+          const dx0 = this.x[i] - fx, dy0 = this.y[i] - fy;
+          const d0 = dx0 * dx0 + dy0 * dy0;
+          if (d0 > outer2) continue;
 
-            const dx = this.x[i] - sx, dy = this.y[i] - sy;
-            const d = sqrt(dx * dx + dy * dy);
-            if (d > stainR * 1.35) continue;
+          const dx = this.x[i] - sx, dy = this.y[i] - sy;
+          const d2 = dx * dx + dy * dy;
+          if (d2 > stainMax2) continue;
 
-            // Rough edge: low-frequency noise in world space
-            const n = noise(this.x[i] * edgeFreq, this.y[i] * edgeFreq, (Acts.act || 1) * 10.0);
+          // Rough edge: low-frequency noise in world space
+          const n = noise(this.x[i] * edgeFreq, this.y[i] * edgeFreq, (Acts.act || 1) * 10.0);
 
-            // Density influence (subtle): lower-density areas accept the stain slightly more
-            const den = (this.desired[this.cell[i]] | 0) / maxD; // 0..1
-            const denK = lerp(1.15, 0.85, den);
+          // Density influence (subtle): lower-density areas accept the stain slightly more
+          const den = (this.desired[this.cell[i]] | 0) / maxD; // 0..1
+          const denK = lerp(1.15, 0.85, den);
 
-            const edge = stainR * denK * (0.82 + 0.30 * n);
-            if (d <= edge) image(spr, this.x[i], this.y[i], this.sz[i], this.sz[i]);
-          }
-        } else {
-          fill(red(Render.lo), green(Render.lo), blue(Render.lo), aStain);
-          for (let i = 0; i < N; i++) {
-            const dx0 = this.x[i] - fx, dy0 = this.y[i] - fy;
-            const d0 = dx0 * dx0 + dy0 * dy0;
-            if (d0 > outer2) continue;
-
-            const dx = this.x[i] - sx, dy = this.y[i] - sy;
-            const d = sqrt(dx * dx + dy * dy);
-            if (d > stainR * 1.35) continue;
-
-            const n = noise(this.x[i] * edgeFreq, this.y[i] * edgeFreq, (Acts.act || 1) * 10.0);
-            const den = (this.desired[this.cell[i]] | 0) / maxD;
-            const denK = lerp(1.15, 0.85, den);
-            const edge = stainR * denK * (0.82 + 0.30 * n);
-            if (d <= edge) circle(this.x[i], this.y[i], this.sz[i]);
-          }
+          const edge = stainR * denK * (0.82 + 0.30 * n);
+          if (d2 <= edge * edge) point(this.x[i], this.y[i]);
         }
       }
     }
 
-    noTint();
     blendMode(BLEND);
-    imageMode(CORNER);
   },
 };
 
-function makeLightSprite(res) {
-  const g = createGraphics(res, res);
-  g.pixelDensity(1);
-  g.clear();
-  const ctx = g.drawingContext;
-  const cx = res * 0.5, cy = res * 0.5, r = res * 0.5;
-  const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
-  grad.addColorStop(0.0, "rgba(255,255,255,1)");
-  grad.addColorStop(0.22, "rgba(255,255,255,0.60)");
-  grad.addColorStop(0.55, "rgba(255,255,255,0.18)");
-  grad.addColorStop(1.0, "rgba(255,255,255,0)");
-  ctx.fillStyle = grad;
-  ctx.fillRect(0, 0, res, res);
-  return g;
-}
+Particles.onTransitionStart = function () {
+  // Burst + de-correlate velocities so the flock immediately leaves the old silhouette.
+  const cx = width * 0.5, cy = height * 0.5;
+  const kick = min(width, height) * 0.0052;
+  const margin = min(width, height) * 0.06;
+  const minFar2 = (min(width, height) * 0.30) ** 2;
+  for (let i = 0; i < N; i++) {
+    const x = this.x[i], y = this.y[i];
+    const dx = x - cx, dy = y - cy;
+    const d = sqrt(dx * dx + dy * dy) + 1e-6;
+    const h = hash01((i + 1) * 2654435761);
+    const ang = TWO_PI * h;
+    // Mostly outward + a bit of sideways "flap"
+    this.vx[i] = this.vx[i] * 0.35 + (dx / d) * kick + cos(ang) * kick * 0.55;
+    this.vy[i] = this.vy[i] * 0.35 + (dy / d) * kick + sin(ang) * kick * 0.55;
+    this.trA[i] = 0;
+
+    // Pick a far roam target so the flock travels the whole space.
+    let rx = 0, ry = 0;
+    for (let k = 0; k < 6; k++) {
+      rx = random(margin, width - margin);
+      ry = random(margin, height - margin);
+      const ddx = rx - x, ddy = ry - y;
+      if (ddx * ddx + ddy * ddy >= minFar2) break;
+    }
+    this.roamX[i] = rx;
+    this.roamY[i] = ry;
+
+    // Nudge initial velocity toward the roam target so the flock immediately traverses space.
+    const rdx = rx - x, rdy = ry - y;
+    const rl = sqrt(rdx * rdx + rdy * rdy) + 1e-6;
+    this.vx[i] += (rdx / rl) * kick * 0.65;
+    this.vy[i] += (rdy / rl) * kick * 0.65;
+  }
+};
