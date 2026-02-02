@@ -254,6 +254,8 @@ const Particles = {
   kind: new Uint8Array(N), cell: new Uint16Array(N), u: new Float32Array(N), v: new Float32Array(N),
   order: new Uint16Array(N),
   cellCounts: new Uint16Array(1), desired: new Uint16Array(1),
+  // walkable region = union of src0 and src1 (prevents routing through holes that are empty in both frames)
+  walk: new Uint8Array(1),
   // transport lanes (for clean motion across empty space)
   trA: new Uint8Array(N),
   trP: new Float32Array(N),
@@ -269,6 +271,7 @@ const Particles = {
   realloc() {
     this.cellCounts = new Uint16Array(CELLS);
     this.desired = new Uint16Array(CELLS);
+    this.walk = new Uint8Array(CELLS);
   },
   resizeBins() {
     this.binsX = max(1, ceil(width / this.binSize));
@@ -312,9 +315,17 @@ const Particles = {
     if (diff > 0) { for (let i = 0; i < CELLS && diff > 0; i++) if (this.desired[i] > 0) { this.desired[i]++; diff--; } if (diff > 0) this.desired[posToCell(width * 0.5, height * 0.5)] += diff; }
     else if (diff < 0) { diff = -diff; for (let i = CELLS - 1; i >= 0 && diff > 0; i--) if (this.desired[i] > 0) { this.desired[i]--; diff--; } }
   },
-  _bestNeighborDeficit(cell) {
+  setWalkFromCounts(counts, off0, off1) {
+    // Union mask: any cell with particles in either frame is considered walkable.
+    // This is cheaper than using image alpha directly and matches our density-field intent.
+    for (let i = 0; i < CELLS; i++) {
+      this.walk[i] = (counts[off0 + i] | 0) > 0 || (counts[off1 + i] | 0) > 0 ? 1 : 0;
+    }
+  },
+  _bestNeighborDeficit(cell, pid) {
     const r = (cell / COLS) | 0, c = cell - r * COLS;
     let best = -1, bestNeed = -1e9;
+    const jitter = hash01(((pid + 1) * 1103515245) ^ (((t / 0.08) | 0) * 12345));
 
     // Ring 1 (8-neighborhood)
     for (let dr = -1; dr <= 1; dr++) {
@@ -324,7 +335,10 @@ const Particles = {
         const cc = c + dc; if (cc < 0 || cc >= COLS) continue;
         const nb = rr * COLS + cc;
         const need = (this.desired[nb] | 0) - (this.cellCounts[nb] | 0);
-        if (need > bestNeed) { bestNeed = need; best = nb; }
+        if (need > bestNeed || (need === bestNeed && need > 0 && hash01(nb ^ (pid * 2654435761)) < jitter)) {
+          bestNeed = need;
+          best = nb;
+        }
       }
     }
 
@@ -338,7 +352,10 @@ const Particles = {
           const cc = c + dc; if (cc < 0 || cc >= COLS) continue;
           const nb = rr * COLS + cc;
           const need = (this.desired[nb] | 0) - (this.cellCounts[nb] | 0);
-          if (need > bestNeed) { bestNeed = need; best = nb; }
+          if (need > bestNeed || (need === bestNeed && need > 0 && hash01((nb + 7) ^ (pid * 1597334677)) < jitter)) {
+            bestNeed = need;
+            best = nb;
+          }
         }
       }
     }
@@ -347,12 +364,18 @@ const Particles = {
     // This fixes "left behind" islands without teleporting across the screen.
     if (bestNeed <= 0) {
       if (_hotCount <= 0) return -1;
+      // IMPORTANT: don't always pick the same global best hotspot (creates traveling "lumps").
+      // Sample a few candidates deterministically per particle so flow spreads calmly.
       let target = -1;
       let bestScore = 0;
       const maxK = min(_hotCount, 24);
-      for (let k = 0; k < maxK; k++) {
-        const cell2 = _hotCells[k];
-        const need2 = _hotNeeds[k];
+      const h0 = ((pid + 1) * 374761393) ^ (((t / 0.08) | 0) * 668265263);
+      const tries = min(6, maxK);
+      for (let s = 0; s < tries; s++) {
+        const k = (h0 + s * 1640531527) % maxK;
+        const kk = (k < 0 ? k + maxK : k) | 0;
+        const cell2 = _hotCells[kk];
+        const need2 = _hotNeeds[kk];
         if (cell2 < 0 || need2 <= 0) continue;
         const r2 = (cell2 / COLS) | 0;
         const c2 = cell2 - r2 * COLS;
@@ -369,6 +392,19 @@ const Particles = {
       const nc = constrain(c + stepC, 0, COLS - 1);
       const nb = nr * COLS + nc;
       if (nb === cell) return -1;
+      // Prefer to stay within the union silhouette when possible.
+      if ((this.walk[nb] | 0) === 0) {
+        // Try a perpendicular alternate step that still progresses.
+        const altR = nr !== r ? r : nr;
+        const altC = nc !== c ? c : nc;
+        // Two alternates: swap one axis
+        const nb1 = altR * COLS + nc;
+        const nb2 = nr * COLS + altC;
+        const ok1 = nb1 !== cell && (this.walk[nb1] | 0) === 1;
+        const ok2 = nb2 !== cell && (this.walk[nb2] | 0) === 1;
+        if (ok1) return nb1;
+        if (ok2) return nb2;
+      }
       return nb;
     }
     return best;
@@ -379,7 +415,7 @@ const Particles = {
       for (let oi = 0; oi < N; oi++) {
         const i = this.order[oi], from = this.cell[i];
         if ((this.cellCounts[from] | 0) <= (this.desired[from] | 0)) continue;
-        const to = this._bestNeighborDeficit(from); if (to < 0) continue;
+        const to = this._bestNeighborDeficit(from, i); if (to < 0) continue;
         this.cellCounts[from]--; this.cellCounts[to]++; this.cell[i] = to; moved++;
         const h = (i + 1) * 73856093 ^ (to + 1) * 19349663;
         this.u[i] = hash01(h); this.v[i] = hash01(h ^ 0x68bc21eb);
@@ -462,7 +498,7 @@ const Particles = {
 
       // Detect if we're crossing a large empty region (desired==0) between current position and destination.
       const posCell = posToCell(this.x[i], this.y[i]);
-      const posEmpty = (this.desired[posCell] | 0) === 0;
+      const posEmpty = (this.walk[posCell] | 0) === 0;
       const dxBase = baseTx - this.x[i], dyBase = baseTy - this.y[i];
       const distBase = sqrt(dxBase * dxBase + dyBase * dyBase);
 
@@ -475,7 +511,7 @@ const Particles = {
           const sx = this.x[i] + dxBase * tt;
           const sy = this.y[i] + dyBase * tt;
           const sc = posToCell(sx, sy);
-          if ((this.desired[sc] | 0) === 0) emptyHits++;
+          if ((this.walk[sc] | 0) === 0) emptyHits++;
         }
         useLane = emptyHits >= VOID_EMPTY_NEED;
       }
@@ -507,6 +543,15 @@ const Particles = {
           const len2 = dx * dx + dy * dy + 1e-6;
           let p0 = ((this.x[i] - this.trSX[i]) * dx + (this.y[i] - this.trSY[i]) * dy) / len2;
           this.trP[i] = constrain(p0, 0, 1);
+        } else {
+          // Follow destination smoothly so the lane doesn't aim at stale positions.
+          this.trEX[i] = lerp(this.trEX[i], baseTx, 0.18);
+          this.trEY[i] = lerp(this.trEY[i], baseTy, 0.18);
+          const dx = this.trEX[i] - this.trSX[i];
+          const dy = this.trEY[i] - this.trSY[i];
+          const len = sqrt(dx * dx + dy * dy) + 1e-6;
+          this.trNX[i] = -dy / len;
+          this.trNY[i] = dx / len;
         }
 
         const sx = this.trSX[i], sy = this.trSY[i];
@@ -746,6 +791,7 @@ const Acts = {
       if (Sampler.ensure(this.act, 0, this.cycle, _off0)) {
         const counts = Sampler.counts(this.act);
         Particles.setDesired(counts, _off0.off, _off0.off, 0);
+        Particles.setWalkFromCounts(counts, _off0.off, _off0.off);
         Particles.hardRetargetToDesired();
       }
     }
@@ -844,9 +890,16 @@ function draw() {
       const ok1 = Sampler.ensure(Acts.act, Acts.src1, Acts.cycle, _off1);
       if (ok0 || ok1) {
         const counts = Sampler.counts(Acts.act);
-        if (ok0 && ok1) Particles.setDesired(counts, _off0.off, _off1.off, Acts.alpha);
-        else if (ok0) Particles.setDesired(counts, _off0.off, _off0.off, 0);
-        else Particles.setDesired(counts, _off1.off, _off1.off, 0);
+        if (ok0 && ok1) {
+          Particles.setDesired(counts, _off0.off, _off1.off, Acts.alpha);
+          Particles.setWalkFromCounts(counts, _off0.off, _off1.off);
+        } else if (ok0) {
+          Particles.setDesired(counts, _off0.off, _off0.off, 0);
+          Particles.setWalkFromCounts(counts, _off0.off, _off0.off);
+        } else {
+          Particles.setDesired(counts, _off1.off, _off1.off, 0);
+          Particles.setWalkFromCounts(counts, _off1.off, _off1.off);
+        }
         for (let i = 0; i < CELLS; i++) desiredSum += Particles.desired[i];
         if (tAdvanced) {
           mismatch = estimateMismatch();
@@ -887,6 +940,7 @@ function draw() {
           if (ok0 && ok1) {
             const counts = Sampler.counts(a);
             Particles.setDesired(counts, _off0.off, _off1.off, s);
+            Particles.setWalkFromCounts(counts, _off0.off, _off1.off);
             for (let i = 0; i < CELLS; i++) desiredSum += Particles.desired[i];
             debugMeanCellDist = estimateMeanCellDist();
             computeDeficitHotspots();
