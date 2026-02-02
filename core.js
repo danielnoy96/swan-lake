@@ -1,0 +1,102 @@
+﻿// Particle-only p5.js (mobile-friendly). PNG frames are sampled offscreen only.
+
+// ---- Config ----
+const ACTS = [1, 2, 3, 4];
+const SRC_COUNT = { 1: 192, 2: 172, 3: 192, 4: 0 };
+const FPS_EFFECTIVE = { 1: 24, 2: 24, 3: 24, 4: 24 }; // source frames per sound-second
+
+const TARGET_W = 160, TARGET_H = 284;
+const CELL_SIZE = 18; // square grid size (px) (tune: larger -> fewer cells -> denser silhouettes)
+const N = 4200, BLACK_PCT = 0.1;
+const TRANSITION_DURATION = 2.0, DANCE_PORTION = 0.6;
+const MIC_THRESHOLD = 0.03;
+const AUTO_SPEED = 0.03;
+const INTERP_SHARPNESS = 1.6; // >1 reduces "double exposure" trails during motion
+
+// Density contrast (tune): higher GAMMA -> stronger emphasis on bright areas (more contrast)
+const DENSITY_THR = 0.07;
+const DENSITY_GAMMA = 1.25;
+const DENSITY_GREY_LIFT = 0.10;
+const DENSITY_SMOOTH = 0.28;
+
+// Particle look (tune)
+const PARTICLE_SIZE = 10;
+const LIGHT_ALPHA = 90;
+
+
+// "Void travel" cleanup: when particles must cross empty (alpha=0) areas, guide them along 3 clean lanes
+// (1 straight + 2 arced) between their current position and their destination.
+const VOID_MIN_DIST_CELLS = 4.0;  // only engage lanes if far enough (in cell units)
+const VOID_SAMPLES = 3;           // line samples to detect crossing empty space
+const VOID_EMPTY_NEED = 2;        // how many samples must be empty to engage lanes
+const LANE_LOOKAHEAD = 0.08;      // progress lookahead along lane (0..1)
+const LANE_DT_REF = 0.03;         // reference sound-time step (used to normalize lane speed)
+
+// ---- State ----
+let mic, amp, audioStarted = false;
+let micRunning = false;
+let t = 0, _prevT = 0, tAdvanced = false, tDelta = 0;
+let debugOn = true, imagesDrawnToCanvas = false;
+let showGrid = false;
+let autoRun = false;
+let catchUp = 0;
+let debugMeanCellDist = 0;
+let debugTransport = 0;
+let actFrames = { 1: [], 2: [], 3: [], 4: [] };
+
+let COLS = 1, ROWS = 1, CELLS = 1;
+let gridX0 = 0, gridY0 = 0;
+let cellW = 1, cellH = 1, invCellW = 1, invCellH = 1;
+
+function resizeGrid() {
+  cellW = CELL_SIZE;
+  cellH = CELL_SIZE;
+  COLS = max(1, floor(width / cellW));
+  ROWS = max(1, floor(height / cellH));
+  CELLS = COLS * ROWS;
+  gridX0 = (width - COLS * cellW) * 0.5;
+  gridY0 = (height - ROWS * cellH) * 0.5;
+  invCellW = 1 / max(1e-6, cellW);
+  invCellH = 1 / max(1e-6, cellH);
+  Sampler.realloc();
+  Particles.realloc();
+  Sampler.resetAllCaches();
+}
+function posToCell(x, y) {
+  let c = ((x - gridX0) * invCellW) | 0, r = ((y - gridY0) * invCellH) | 0;
+  if (c < 0) c = 0; else if (c >= COLS) c = COLS - 1;
+  if (r < 0) r = 0; else if (r >= ROWS) r = ROWS - 1;
+  return r * COLS + c;
+}
+function cellOriginX(cell) { return gridX0 + (cell % COLS) * cellW; }
+function cellOriginY(cell) { return gridY0 + ((cell / COLS) | 0) * cellH; }
+
+function fitRect(sw, sh, dw, dh, out) {
+  const s = min(dw / sw, dh / sh), w = sw * s, h = sh * s;
+  out.x = (dw - w) * 0.5; out.y = (dh - h) * 0.5; out.w = w; out.h = h; return out;
+}
+function hash01(n) {
+  n = (n | 0) ^ 0x9e3779b9;
+  n = Math.imul(n ^ (n >>> 16), 0x85ebca6b);
+  n = Math.imul(n ^ (n >>> 13), 0xc2b2ae35);
+  n = (n ^ (n >>> 16)) >>> 0;
+  return n / 4294967296;
+}
+function nextActWithFrames(fromAct) {
+  let a = fromAct;
+  for (let k = 0; k < ACTS.length; k++) {
+    a++; if (a > 4) a = 1;
+    if ((actFrames[a] || []).length > 0) return a;
+  }
+  return fromAct;
+}
+
+function drawGridOverlay() {
+  push();
+  stroke(255, 22);
+  strokeWeight(1);
+  for (let c = 0; c <= COLS; c++) line(gridX0 + c * cellW, gridY0, gridX0 + c * cellW, gridY0 + ROWS * cellH);
+  for (let r = 0; r <= ROWS; r++) line(gridX0, gridY0 + r * cellH, gridX0 + COLS * cellW, gridY0 + r * cellH);
+  pop();
+}
+
