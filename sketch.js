@@ -842,9 +842,10 @@ function draw() {
           const targetCU = constrain((mismatch - N * 0.10) / (N * 0.45), 0, 1);
           catchUp = max(catchUp * 0.94, targetCU, posCU * 0.35);
           const passes = (mismatch > 900 ? 10 : mismatch > 600 ? 8 : mismatch > 350 ? 6 : mismatch > 180 ? 4 : 3) + floor(catchUp * 2);
-          moved += Particles.rebalancePasses(passes);
-          // Always keep hotspots fresh; used both for nudges and for long-range deficit guidance.
+          // IMPORTANT: compute hotspots BEFORE rebalancing so surplus "islands" can find long-range deficits
+          // in the same update tick (otherwise particles may look "stuck" until the next t advance).
           computeDeficitHotspots();
+          moved += Particles.rebalancePasses(passes);
           if (catchUp > 0.32) catchUpNudge(catchUp);
           // Catch-up increases snap/attraction but stays smooth (no teleport)
           Particles.updateInsideCells(level, 0.18 + catchUp * 0.26, 0.15, catchUp * 0.7);
@@ -874,8 +875,8 @@ function draw() {
             Particles.setDesired(counts, _off0.off, _off1.off, s);
             for (let i = 0; i < CELLS; i++) desiredSum += Particles.desired[i];
             debugMeanCellDist = estimateMeanCellDist();
-            moved += Particles.rebalancePasses(7);
             computeDeficitHotspots();
+            moved += Particles.rebalancePasses(7);
             if (p > 0.74) catchUpNudge(0.25);
             Particles.updateInsideCells(level, map(p, 0.88, 1.0, 0, 1, true), 0.0, 0.65);
             Particles.separate(0.020, 3.2);
