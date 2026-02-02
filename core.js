@@ -42,15 +42,22 @@
   });
 })();
 const ACTS = [1, 2, 3, 4];
-const SRC_COUNT = { 1: 192, 2: 172, 3: 192, 4: 192 };
-const FPS_EFFECTIVE = { 1: 24, 2: 24, 3: 24, 4: 24 }; // source frames per sound-second
+const SRC_COUNT = { 1: 192, 2: 172, 3: 192, 4: 136 };
+const FPS_EFFECTIVE = { 1: 22, 2: 22, 3: 22, 4: 22 }; // source frames per sound-second (slower = clearer silhouettes)
 
 const TARGET_W = 160, TARGET_H = 284;
 const CELL_SIZE = 18; // square grid size (px) (tune: larger -> fewer cells -> denser silhouettes)
 const N = 4200, BLACK_PCT = 0.1;
-const TRANSITION_DURATION = 2.0, DANCE_PORTION = 0.78;
+const TRANSITION_DURATION = 2.6, DANCE_PORTION = 0.78;
 const MIC_THRESHOLD = 0.03;
-const AUTO_SPEED = 0.03;
+const AUTO_SPEED = 0.02;
+
+// Scene visibility (fade in/out based on mic level; independent of sound-time `t` so it can fade out on silence)
+const VIS_IN = 0.16;
+const VIS_OUT = 0.08;
+// Use a separate (lower) threshold than MIC_THRESHOLD so visuals still react on quiet mics.
+const VIS_LEVEL_ON = 0.006;
+const VIS_LEVEL_FULL = 0.030;
 const INTERP_SHARPNESS = 1.6; // >1 reduces "double exposure" trails during motion
 
 // Density contrast (tune): higher GAMMA -> stronger emphasis on bright areas (more contrast)
@@ -79,6 +86,8 @@ let t = 0, _prevT = 0, tAdvanced = false, tDelta = 0;
 let debugOn = true, imagesDrawnToCanvas = false;
 let showGrid = false;
 let autoRun = false;
+let sceneVis = 0; // 0..1
+let sceneA = 0;   // eased alpha used by renderers
 let catchUp = 0;
 let debugMeanCellDist = 0;
 let debugTransport = 0;

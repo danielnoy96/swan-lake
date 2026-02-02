@@ -559,11 +559,13 @@
   },
   draw() {
     noStroke();
+    const aScene = typeof sceneA === "number" ? sceneA : 1;
+    if (aScene <= 0.004) return;
     // Base: always white lights (additive)
     blendMode(ADD);
     strokeCap(ROUND);
     strokeWeight(PARTICLE_SIZE);
-    stroke(255, 255, 255, LIGHT_ALPHA);
+    stroke(255, 255, 255, LIGHT_ALPHA * aScene);
     for (let i = 0; i < N; i++) point(this.x[i], this.y[i]);
 
     // Color overlay is *localized* (grouped) around a focus point.
@@ -578,7 +580,7 @@
       const edgeFreq = 0.010;
 
       // Majority tint: one calm "wash" over the focus region (no contouring by density)
-      const aWash = Render.tintA | 0;
+      const aWash = (Render.tintA * aScene) | 0;
       stroke(red(Render.hi), green(Render.hi), blue(Render.hi), aWash);
       for (let i = 0; i < N; i++) {
         const dx = this.x[i] - fx, dy = this.y[i] - fy;
@@ -587,7 +589,7 @@
       }
 
       // Minority tint: a single "stain" blob sitting on top of the wash (irregular edge via noise).
-      const aStain = Render.tintB | 0;
+      const aStain = (Render.tintB * aScene) | 0;
       if (aStain > 0) {
         stroke(red(Render.lo), green(Render.lo), blue(Render.lo), aStain);
         const stainMax2 = (stainR * 1.35) * (stainR * 1.35);
