@@ -10,6 +10,8 @@ function preload() {
 let _actHasDesired = false;
 let _actDesiredFor = 0;
 const _prefOff = { off: 0 };
+let _debugDtSec = 0;
+let _debugRate = 0;
 
 function setup() {
   createCanvas(windowWidth, windowHeight);
@@ -104,15 +106,22 @@ function draw() {
 
   // Real-time scaled step (keeps loop length stable across devices/FPS).
   // NOTE: still freezes when `t` is not advanced (silence -> no motion).
-  const dtSec = constrain((typeof deltaTime === "number" ? deltaTime : 16.7) / 1000, 0, 0.05);
+  // Keep time stable across FPS, but avoid very large jumps that can overwhelm sampling/redistribution.
+  // 0.10 means: down to ~10fps, timing stays correct; below that it will slow rather than spike.
+  const dtSec = constrain((typeof deltaTime === "number" ? deltaTime : 16.7) / 1000, 0, 0.10);
+  _debugDtSec = dtSec;
 
   if (autoRun) {
     t += AUTO_SPEED * dtSec;
+    _debugRate = AUTO_SPEED;
   } else if (micRunning && level > MIC_THRESHOLD) {
     // Mic speed in sound-seconds per real second.
     // Quickly reaches 1.0 so "always loud" finishes a full loop in ~60s like Auto.
-    const rate = map(level, MIC_THRESHOLD, 0.06, 0.30, 1.0, true);
+    const rate = map(level, MIC_THRESHOLD, MIC_THRESHOLD + 0.02, 0.35, 1.0, true);
     t += rate * dtSec;
+    _debugRate = rate;
+  } else {
+    _debugRate = 0;
   }
 
   tDelta = t - _prevT;
@@ -342,7 +351,7 @@ function drawDebug(level, desiredSum, moved, mismatch) {
   fill(255);
   textSize(12);
   textAlign(LEFT, TOP);
-  text(`mode:${Acts.mode} act:${Acts.act} next:${Acts.next}  t:${t.toFixed(2)} el:${Acts.elapsed.toFixed(2)} dur:${Acts.dur.toFixed(2)} fps:${Acts.fps} vis:${sceneVis.toFixed(2)}`, 18, 16);
+  text(`mode:${Acts.mode} act:${Acts.act} next:${Acts.next}  t:${t.toFixed(2)} el:${Acts.elapsed.toFixed(2)} dur:${Acts.dur.toFixed(2)} fps:${Acts.fps} dt:${_debugDtSec.toFixed(3)} rate:${_debugRate.toFixed(2)} vis:${sceneVis.toFixed(2)}`, 18, 16);
   const step = max(1, (FRAME_STEP && FRAME_STEP[Acts.act]) | 0);
   const framesPerCycle = Acts.cycle > 0 ? ceil(Acts.cycle / step) : 0;
   text(`cycle:${Acts.cycle} SRC:${SRC_COUNT[Acts.act] || 0} step:${step} fCycle:${framesPerCycle} ready:${ready}  src0/src1:${Acts.src0}/${Acts.src1} a:${Acts.alpha.toFixed(2)} cycles:${Acts.cycles}`, 18, 32);
