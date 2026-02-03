@@ -6,15 +6,18 @@
     this.cycle = src;
     this.fps = FPS_EFFECTIVE[this.act] || 24;
     this.elapsed = max(0, t - this.actStartT);
-    this.frameFloat = this.elapsed * this.fps;
+    const step = max(1, (FRAME_STEP && FRAME_STEP[this.act]) | 0);
+    const framesPerCycle = this.cycle > 0 ? ceil(this.cycle / step) : 0;
+    // Advance stepped-frame index at (fps/step): fewer density updates per second -> smoother / less CPU.
+    this.frameFloat = step > 1 ? (this.elapsed * this.fps) / step : (this.elapsed * this.fps);
     this.dur = this.cycle > 0 && this.fps > 0 ? this.cycle / this.fps : 0;
     if (this.cycle <= 0) { this.idx = this.src0 = this.src1 = 0; this.alpha = 0; this.cycles = 0; return; }
     const base = floor(this.frameFloat);
-    this.idx = base % this.cycle;
-    this.src0 = this.idx;
-    this.src1 = (this.idx + 1) % this.cycle;
+    this.idx = framesPerCycle > 0 ? (base % framesPerCycle) : 0;
+    this.src0 = (this.idx * step) % this.cycle;
+    this.src1 = (this.src0 + step) % this.cycle;
     this.alpha = constrain(this.frameFloat - base, 0, 1);
-    this.cycles = floor(this.frameFloat / this.cycle);
+    this.cycles = framesPerCycle > 0 ? floor(this.frameFloat / framesPerCycle) : 0;
   },
   startTransition() {
     this.mode = "TRANSITION";

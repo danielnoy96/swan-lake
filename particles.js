@@ -265,7 +265,9 @@
     const cx = width * 0.5, cy = height * 0.5;
 
     debugTransport = 0;
-    const dtN = constrain(tDelta / LANE_DT_REF, 0, 2);
+    // Large tDelta (e.g., when AUTO_SPEED is high) makes lane progress jumpy.
+    // Clamp so motion stays smooth even if time advances faster.
+    const dtN = constrain(tDelta / LANE_DT_REF, 0, 1);
 
     for (let i = 0; i < N; i++) {
       const cell = this.cell[i];

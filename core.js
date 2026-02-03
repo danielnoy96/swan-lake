@@ -43,7 +43,9 @@
 })();
 const ACTS = [1, 2, 3, 4];
 const SRC_COUNT = { 1: 192, 2: 172, 3: 192, 4: 136 };
-const FPS_EFFECTIVE = { 1: 22, 2: 22, 3: 22, 4: 22 }; // source frames per sound-second (slower = clearer silhouettes)
+const FPS_EFFECTIVE = { 1: 24, 2: 24, 3: 24, 4: 24 }; // source frames per sound-second (slower = clearer silhouettes)
+// Frame stepping: set to 1 to use every source frame (full fidelity).
+const FRAME_STEP = { 1: 1, 2: 1, 3: 1, 4: 1 };
 
 const TARGET_W = 160, TARGET_H = 284;
 const CELL_SIZE = 18; // square grid size (px) (tune: larger -> fewer cells -> denser silhouettes)

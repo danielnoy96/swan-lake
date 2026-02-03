@@ -48,6 +48,9 @@ const Typography = {
 
   resize() {
     this.ready = false;
+    // Huge source PNGs can blow up memory (especially on mobile) and make everything stutter.
+    // We only need enough resolution to build low-res masks, so downscale aggressively.
+    this._downscaleSources();
     this._updateRects();
     this._buildTemplates();
     this._seedParticles();
@@ -63,6 +66,19 @@ const Typography = {
   },
 
   // ---- internals ----
+  _downscaleSources() {
+    const maxDim = 2400;
+    const down = (img) => {
+      if (!img || !img.width) return;
+      const w = img.width, h = img.height;
+      const m = max(w, h);
+      if (m <= maxDim) return;
+      if (w >= h) img.resize(maxDim, 0);
+      else img.resize(0, maxDim);
+    };
+    down(this.bigImg);
+    down(this.smallImg);
+  },
   _alloc() {
     const total = max(1, this.TOTAL | 0);
     const bigN = constrain(this.BIG_N | 0, 0, total);

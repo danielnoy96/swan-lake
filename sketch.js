@@ -134,7 +134,11 @@ function draw() {
             const targetCU = constrain((mismatch - N * 0.10) / (N * 0.45), 0, 1);
             catchUp = max(catchUp * 0.94, targetCU, posCU * 0.35);
 
-            const passes = (mismatch > 900 ? 10 : mismatch > 600 ? 8 : mismatch > 350 ? 6 : mismatch > 180 ? 4 : 3) + floor(catchUp * 2);
+            // Cap redistribution work per update to avoid frame spikes (reduces "shake" when AUTO_SPEED is high).
+            const passes = min(
+              8,
+              (mismatch > 900 ? 10 : mismatch > 600 ? 8 : mismatch > 350 ? 6 : mismatch > 180 ? 4 : 3) + floor(catchUp * 2)
+            );
             computeDeficitHotspots();
             moved += Particles.rebalancePasses(passes);
             if (catchUp > 0.32) catchUpNudge(catchUp);
@@ -166,8 +170,9 @@ function draw() {
             const a = Acts.next;
             const cycle = SRC_COUNT[a] || 0;
             if (cycle > 0) {
+              const step = max(1, (FRAME_STEP && FRAME_STEP[a]) | 0);
               const ok0 = Sampler.ensure(a, 0, cycle, _off0);
-              const ok1 = Sampler.ensure(a, (cycle > 1 ? 1 : 0), cycle, _off1);
+              const ok1 = Sampler.ensure(a, (0 + step) % cycle, cycle, _off1);
               if (ok0 && ok1) Acts.prepDone = true;
             }
           }
@@ -176,8 +181,9 @@ function draw() {
           const a = Acts.next;
           const cycle = SRC_COUNT[a] || 0;
           if (cycle > 0) {
+            const step = max(1, (FRAME_STEP && FRAME_STEP[a]) | 0);
             const ok0 = Sampler.ensure(a, 0, cycle, _off0);
-            const ok1 = Sampler.ensure(a, 1 % cycle, cycle, _off1);
+            const ok1 = Sampler.ensure(a, (0 + step) % cycle, cycle, _off1);
             if (ok0 || ok1) {
               const counts = Sampler.counts(a);
               if (ok0 && ok1) {
@@ -256,9 +262,10 @@ function drawDebug(level, desiredSum, moved, mismatch) {
   textSize(12);
   textAlign(LEFT, TOP);
   text(`mode:${Acts.mode} act:${Acts.act} next:${Acts.next}  t:${t.toFixed(2)} el:${Acts.elapsed.toFixed(2)} dur:${Acts.dur.toFixed(2)} fps:${Acts.fps} vis:${sceneVis.toFixed(2)}`, 18, 16);
-  text(`cycle:${Acts.cycle} SRC:${SRC_COUNT[Acts.act] || 0} ready:${ready}  src0/src1:${Acts.src0}/${Acts.src1} a:${Acts.alpha.toFixed(2)} cycles:${Acts.cycles}`, 18, 32);
+  const step = max(1, (FRAME_STEP && FRAME_STEP[Acts.act]) | 0);
+  const framesPerCycle = Acts.cycle > 0 ? ceil(Acts.cycle / step) : 0;
+  text(`cycle:${Acts.cycle} SRC:${SRC_COUNT[Acts.act] || 0} step:${step} fCycle:${framesPerCycle} ready:${ready}  src0/src1:${Acts.src0}/${Acts.src1} a:${Acts.alpha.toFixed(2)} cycles:${Acts.cycles}`, 18, 32);
   text(`grid:${COLS}x${ROWS} desiredSum:${desiredSum} moved:${moved} mismatch:${mismatch} meanDist:${debugMeanCellDist.toFixed(1)} catchUp:${catchUp.toFixed(2)} hot:${_hotCount} lane:${debugTransport}  cache(h/m):${Sampler.hitsF}/${Sampler.missesF} total:${Sampler.hits}/${Sampler.misses} inFlight:${Sampler.inFlight || 0} q:${q} level:${level.toFixed(3)}  ${typ}`, 18, 48);
   text(`imagesDrawnToCanvas:${imagesDrawnToCanvas}`, 18, 64);
   pop();
 }
-
