@@ -29,40 +29,6 @@ function setup() {
     return;
   }
 
-  const styleBtn = (btn) => {
-    btn.style("position", "fixed");
-    btn.style("z-index", "10");
-    btn.style("padding", "8px 10px");
-    btn.style("font-size", "14px");
-    btn.style("border", "1px solid rgba(255,255,255,0.25)");
-    btn.style("background", "rgba(0,0,0,0.55)");
-    btn.style("color", "#fff");
-    btn.style("border-radius", "8px");
-  };
-
-  const btnGrid = createButton("Grid: OFF");
-  btnGrid.position(12, 12);
-  styleBtn(btnGrid);
-  btnGrid.mousePressed(() => {
-    showGrid = !showGrid;
-    btnGrid.html(showGrid ? "Grid: ON" : "Grid: OFF");
-  });
-
-  const btnAuto = createButton("Auto: OFF");
-  btnAuto.position(110, 12);
-  styleBtn(btnAuto);
-  btnAuto.mousePressed(() => {
-    autoRun = !autoRun;
-    if (autoRun) {
-      // Auto mode doesn't require mic permission; allow running immediately.
-      audioStarted = true;
-    } else {
-      // If we were never granted mic permission, return to the tap-to-start screen.
-      if (!micRunning) audioStarted = false;
-    }
-    btnAuto.html(autoRun ? "Auto: ON" : "Auto: OFF");
-  });
-
   try {
     Typography.init();
   } catch (e) {
@@ -337,6 +303,15 @@ function mousePressed() {
 
 function keyPressed() {
   if (key === "d" || key === "D") debugOn = !debugOn;
+  if (key === "g" || key === "G") showGrid = !showGrid;
+  if (key === "a" || key === "A") {
+    autoRun = !autoRun;
+    if (autoRun) {
+      audioStarted = true;
+    } else {
+      if (!micRunning) audioStarted = false;
+    }
+  }
 }
 
 function drawDebug(level, desiredSum, moved, mismatch) {

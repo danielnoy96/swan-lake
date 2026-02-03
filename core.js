@@ -108,7 +108,7 @@ const LANE_DT_REF = 0.03;         // reference sound-time step (used to normaliz
 let mic, amp, audioStarted = false;
 let micRunning = false;
 let t = 0, _prevT = 0, tAdvanced = false, tDelta = 0;
-let debugOn = true, imagesDrawnToCanvas = false;
+let debugOn = false, imagesDrawnToCanvas = false;
 let showGrid = false;
 let autoRun = false;
 let sceneVis = 0; // 0..1
