@@ -62,7 +62,10 @@
 })();
 const ACTS = [1, 2, 3, 4];
 const SRC_COUNT = { 1: 192, 2: 172, 3: 192, 4: 136 };
-const FPS_EFFECTIVE = { 1: 24, 2: 24, 3: 24, 4: 24 }; // source frames per sound-second (slower = clearer silhouettes)
+// Source frames per "sound-second" of internal time `t`.
+// With the dt-based time step, 1.0 sound-second ~= 1 real second at full input speed.
+// Chosen so: totalActsDuration + totalTransitionsDuration ~= 60s for a full 1→2→3→4→1 loop.
+const FPS_EFFECTIVE = { 1: 14, 2: 14, 3: 14, 4: 14 };
 // Frame stepping: set to 1 to use every source frame (full fidelity).
 const FRAME_STEP = { 1: 1, 2: 1, 3: 1, 4: 1 };
 
@@ -71,7 +74,8 @@ const CELL_SIZE = 18; // square grid size (px) (tune: larger -> fewer cells -> d
 const N = 4200, BLACK_PCT = 0.1;
 const TRANSITION_DURATION = 2.6, DANCE_PORTION = 0.78;
 const MIC_THRESHOLD = 0.03;
-const AUTO_SPEED = 0.02;
+// Auto mode speed in sound-seconds per real second (applied with dt).
+const AUTO_SPEED = 1.0;
 
 // Scene visibility (fade in/out based on mic level; independent of sound-time `t` so it can fade out on silence)
 const VIS_IN = 0.16;

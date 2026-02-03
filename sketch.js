@@ -101,8 +101,19 @@ function draw() {
   }
 
   const level = autoRun ? 0.09 : (micRunning ? amp.getLevel() : 0);
-  if (autoRun) t += AUTO_SPEED;
-  else if (micRunning && level > MIC_THRESHOLD) t += map(level, MIC_THRESHOLD, 0.2, 0.01, 0.05, true);
+
+  // Real-time scaled step (keeps loop length stable across devices/FPS).
+  // NOTE: still freezes when `t` is not advanced (silence -> no motion).
+  const dtSec = constrain((typeof deltaTime === "number" ? deltaTime : 16.7) / 1000, 0, 0.05);
+
+  if (autoRun) {
+    t += AUTO_SPEED * dtSec;
+  } else if (micRunning && level > MIC_THRESHOLD) {
+    // Mic speed in sound-seconds per real second.
+    // Quickly reaches 1.0 so "always loud" finishes a full loop in ~60s like Auto.
+    const rate = map(level, MIC_THRESHOLD, 0.06, 0.30, 1.0, true);
+    t += rate * dtSec;
+  }
 
   tDelta = t - _prevT;
   tAdvanced = tDelta !== 0;
