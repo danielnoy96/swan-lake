@@ -3,17 +3,20 @@ const ACT_COLORS = {
   1: { bg: "#5F6E7C", hi: "#EFE9DD", lo: "#B8A76A" },
   2: { bg: "#6B665E", hi: "#F5F6F4", lo: "#C7CCD2" },
   3: { bg: "#121317", hi: "#4A1F2D", lo: "#7A2734" },
+  4: { bg: "#3E4A57", hi: "#2A2D33", lo: "#BFC4CB" },
 };
 const ACT_FOCUS = {
   1: { x: 0.52, y: 0.55 },
   2: { x: 0.50, y: 0.54 },
   3: { x: 0.52, y: 0.52 },
+  4: { x: 0.52, y: 0.54 },
 };
 const ACT_STAIN = {
   // Relative stain size (minor color) per act; act2 has more secondary color.
   1: { size: 0.40, ox: -0.10, oy: 0.04, a: 0.55 },
   2: { size: 0.72, ox: 0.12, oy: 0.06, a: 1.00 },
   3: { size: 0.62, ox: 0.08, oy: -0.06, a: 1.00 },
+  4: { size: 0.26, ox: 0.10, oy: -0.04, a: 0.32 },
 };
 
 const Render = {

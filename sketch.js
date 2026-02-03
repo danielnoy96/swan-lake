@@ -2,6 +2,11 @@ function preload() {
   Typography.preload();
 }
 
+// Keep last valid ACT silhouette when sampler is catching up (prevents "break" on claps).
+let _actHasDesired = false;
+let _actDesiredFor = 0;
+const _prefOff = { off: 0 };
+
 function setup() {
   createCanvas(windowWidth, windowHeight);
 
@@ -107,6 +112,14 @@ function draw() {
       if (Acts.cycle > 0) {
         const ok0 = Sampler.ensure(Acts.act, Acts.src0, Acts.cycle, _off0);
         const ok1 = Sampler.ensure(Acts.act, Acts.src1, Acts.cycle, _off1);
+
+        // Prefetch a small window ahead so bursty inputs (claps) don't cause missing-frame fallbacks.
+        if (!autoRun && tAdvanced) {
+          Sampler.ensure(Acts.act, (Acts.src0 + 1) % Acts.cycle, Acts.cycle, _prefOff);
+          Sampler.ensure(Acts.act, (Acts.src0 + 2) % Acts.cycle, Acts.cycle, _prefOff);
+          Sampler.ensure(Acts.act, (Acts.src1 + 1) % Acts.cycle, Acts.cycle, _prefOff);
+        }
+
         if (ok0 || ok1) {
           const counts = Sampler.counts(Acts.act);
           if (ok0 && ok1) {
@@ -119,6 +132,8 @@ function draw() {
             Particles.setDesired(counts, _off1.off, _off1.off, 0);
             Particles.setWalkFromCounts(counts, _off1.off, _off1.off);
           }
+          _actHasDesired = true;
+          _actDesiredFor = Acts.act;
 
           for (let i = 0; i < CELLS; i++) desiredSum += Particles.desired[i];
 
@@ -127,28 +142,59 @@ function draw() {
           Render.maxD = maxD;
 
           if (tAdvanced) {
-            mismatch = estimateMismatch();
-            debugMeanCellDist = estimateMeanCellDist();
+            // If sound-time advances in bursts (claps), do a few small sub-steps so the shape has time
+            // to redistribute and doesn't "break" while the sampler catches up.
+            const td0 = tDelta;
+            const steps = constrain(ceil(abs(td0) / 0.02), 1, 4);
+            const td = td0 / steps;
+            for (let s = 0; s < steps; s++) {
+              tDelta = td;
+              mismatch = estimateMismatch();
+              debugMeanCellDist = estimateMeanCellDist();
 
-            const posCU = constrain((debugMeanCellDist - cellW * 0.85) / (cellW * 3.2), 0, 1);
-            const targetCU = constrain((mismatch - N * 0.10) / (N * 0.45), 0, 1);
-            catchUp = max(catchUp * 0.94, targetCU, posCU * 0.35);
+              const posCU = constrain((debugMeanCellDist - cellW * 0.85) / (cellW * 3.2), 0, 1);
+              const targetCU = constrain((mismatch - N * 0.10) / (N * 0.45), 0, 1);
+              catchUp = max(catchUp * 0.94, targetCU, posCU * 0.35);
 
-            // Cap redistribution work per update to avoid frame spikes (reduces "shake" when AUTO_SPEED is high).
-            const passes = min(
-              8,
-              (mismatch > 900 ? 10 : mismatch > 600 ? 8 : mismatch > 350 ? 6 : mismatch > 180 ? 4 : 3) + floor(catchUp * 2)
-            );
-            computeDeficitHotspots();
-            moved += Particles.rebalancePasses(passes);
-            if (catchUp > 0.32) catchUpNudge(catchUp);
+              const passesTotal =
+                (mismatch > 900 ? 10 : mismatch > 600 ? 8 : mismatch > 350 ? 6 : mismatch > 180 ? 4 : 3) + floor(catchUp * 2);
+              const passes = min(8, max(2, ceil(passesTotal / steps)));
 
-            Particles.updateInsideCells(level, 0.18 + catchUp * 0.26, 0.15, catchUp * 0.7);
-            Particles.separate(0.018, 3.2);
-            catchUp *= 0.97;
+              computeDeficitHotspots();
+              moved += Particles.rebalancePasses(passes);
+              if (catchUp > 0.32) catchUpNudge(catchUp);
+
+              Particles.updateInsideCells(level, 0.18 + catchUp * 0.26, 0.15, catchUp * 0.7);
+              Particles.separate(0.018, 3.2);
+              catchUp *= 0.97;
+            }
+            tDelta = td0;
           }
         } else {
-          if (tAdvanced) Particles.dance(level, 0.20);
+          // If we already have a valid silhouette for this act, keep it until the sampler catches up.
+          if (_actHasDesired && _actDesiredFor === Acts.act) {
+            if (tAdvanced) {
+              const td0 = tDelta;
+              const steps = constrain(ceil(abs(td0) / 0.02), 1, 4);
+              const td = td0 / steps;
+              for (let s = 0; s < steps; s++) {
+                tDelta = td;
+                mismatch = estimateMismatch();
+                debugMeanCellDist = estimateMeanCellDist();
+                const posCU = constrain((debugMeanCellDist - cellW * 0.85) / (cellW * 3.2), 0, 1);
+                const targetCU = constrain((mismatch - N * 0.10) / (N * 0.45), 0, 1);
+                catchUp = max(catchUp * 0.94, targetCU, posCU * 0.35);
+                computeDeficitHotspots();
+                moved += Particles.rebalancePasses(3);
+                Particles.updateInsideCells(level, 0.18 + catchUp * 0.26, 0.15, catchUp * 0.7);
+                Particles.separate(0.018, 3.2);
+                catchUp *= 0.97;
+              }
+              tDelta = td0;
+            }
+          } else {
+            if (tAdvanced) Particles.dance(level, 0.20);
+          }
         }
       } else {
         if (tAdvanced) Particles.dance(level, 0.35);

@@ -28,6 +28,11 @@
   loopRot: 0,
   loopTheta0: 0,
   loopThetaSpan: 0,
+  transitionMode: 0, // 0=lemniscate ribbon, 1=circle (special case)
+  circleR: 0,
+  circleThick: 0,
+  circleTheta0: 0,
+  circleThetaSpan: 0,
   cellCounts: new Uint16Array(1), desired: new Uint16Array(1),
   // walkable region = union of src0 and src1 (prevents routing through holes that are empty in both frames)
   walk: new Uint8Array(1),
@@ -111,6 +116,11 @@
     this.loopRot = 0;
     this.loopTheta0 = 0;
     this.loopThetaSpan = TWO_PI * 1.12;
+    this.transitionMode = 0;
+    this.circleR = minD * 0.22;
+    this.circleThick = minD * 0.020;
+    this.circleTheta0 = 0;
+    this.circleThetaSpan = TWO_PI * 1.25;
   },
   setDesired(counts, off0, off1, alpha) {
     const a = constrain(alpha, 0, 1);
@@ -499,6 +509,7 @@
     }
   },
   dance(level, s) {
+    if ((this.transitionMode | 0) === 1) return this._danceCircle(level, s);
     // Reference ribbon path (∞): a deterministic lemniscate that reads like a true ribbon.
     // Tail is less "saturated" (lower alpha), head is more saturated (higher alpha).
     const minD = min(width, height);
@@ -615,6 +626,86 @@
       else if (this.y[i] > height) { this.y[i] = height; this.vy[i] *= -0.25; }
     }
   },
+  _danceCircle(level, s) {
+    const minD = min(width, height);
+    const margin = minD * 0.06;
+    const uT = constrain(s, 0, 1);
+
+    const dt = constrain(abs(tDelta), 0, 0.06);
+    if (dt <= 0) return;
+    const dtK = dt / 0.02;
+    const p = uT * uT * (3 - 2 * uT);
+
+    // Center stays fixed in the middle (simple, iconic circle).
+    const cx = width * 0.5;
+    const cy = height * 0.5;
+
+    const thetaH = this.circleTheta0 + this.circleThetaSpan * p;
+    const baseR = max(minD * 0.10, this.circleR);
+    const thick = max(minD * 0.006, this.circleThick);
+
+    this.headX = constrain(cx + cos(thetaH) * baseR, margin, width - margin);
+    this.headY = constrain(cy + sin(thetaH) * baseR, margin, height - margin);
+
+    const seekK = 26 + 18 * uT;
+    const alignK = 16 + 10 * uT;
+    const maxSpd = (minD * 0.85) * (0.90 + map(level, 0, 0.2, 0, 0.18, true));
+    const dampP = pow(0.90, dtK);
+    const flutter = (1 - uT) * 0.22 + map(level, 0, 0.2, 0, 0.45, true);
+
+    // Tail span around the circle
+    const tailSpan = TWO_PI * 0.95;
+
+    for (let i = 0; i < N; i++) {
+      const x = this.x[i], y = this.y[i];
+      let vx = this.vx[i], vy = this.vy[i];
+
+      const u = this.slotU[i];
+      const th = thetaH - u * tailSpan;
+
+      // Tangent (direction) around the circle
+      const tx = -sin(th);
+      const ty = cos(th);
+      const px = -ty, py = tx;
+
+      const n0 = noise(this.slotPhase[i], t * 0.18);
+      const f = (n0 - 0.5) * flutter;
+
+      const r = baseR + this.slotLat[i] * thick + f * thick;
+      const tx0 = cx + cos(th) * r;
+      const ty0 = cy + sin(th) * r;
+
+      const dx0 = tx0 - x;
+      const dy0 = ty0 - y;
+
+      vx += dx0 * seekK * dt;
+      vy += dy0 * seekK * dt;
+
+      const forward = lerp(maxSpd * 0.95, maxSpd * 0.40, u);
+      vx += (tx * forward - vx) * alignK * dt;
+      vy += (ty * forward - vy) * alignK * dt;
+
+      vx *= dampP;
+      vy *= dampP;
+
+      const sp2 = vx * vx + vy * vy;
+      const ms2 = maxSpd * maxSpd;
+      if (sp2 > ms2) {
+        const k = maxSpd / sqrt(sp2);
+        vx *= k; vy *= k;
+      }
+
+      this.vx[i] = vx;
+      this.vy[i] = vy;
+      this.x[i] = x + vx * dt;
+      this.y[i] = y + vy * dt;
+
+      if (this.x[i] < 0) { this.x[i] = 0; this.vx[i] *= -0.25; }
+      else if (this.x[i] > width) { this.x[i] = width; this.vx[i] *= -0.25; }
+      if (this.y[i] < 0) { this.y[i] = 0; this.vy[i] *= -0.25; }
+      else if (this.y[i] > height) { this.y[i] = height; this.vy[i] *= -0.25; }
+    }
+  },
   draw() {
     noStroke();
     const aScene = typeof sceneA === "number" ? sceneA : 1;
@@ -701,7 +792,7 @@
   },
 };
 
-Particles.onTransitionStart = function () {
+Particles.onTransitionStart = function (fromAct, toAct) {
   // Stage A: set leader + 2-turn waypoint navigation (S-curve).
   const minD = min(width, height);
   const margin = minD * 0.08;
@@ -712,6 +803,30 @@ Particles.onTransitionStart = function () {
   sx /= N; sy /= N;
   sx = constrain(sx, margin, width - margin);
   sy = constrain(sy, margin, height - margin);
+
+  // Special case: act4 -> act1 forms a centered circle.
+  if ((fromAct | 0) === 4 && (toAct | 0) === 1) {
+    this.transitionMode = 1;
+    this.circleR = minD * 0.22;
+    this.circleThick = minD * 0.020;
+    this.circleTheta0 = 0;
+    this.circleThetaSpan = TWO_PI * 1.25;
+
+    // Takeoff: nudge velocities tangentially so it becomes a circle fast.
+    const kick = minD * 0.48;
+    for (let i = 0; i < N; i++) {
+      const u = this.slotU[i];
+      const th = -u * TWO_PI * 0.95;
+      const tx = -sin(th);
+      const ty = cos(th);
+      this.vx[i] = this.vx[i] * 0.25 + tx * kick;
+      this.vy[i] = this.vy[i] * 0.25 + ty * kick;
+      this.trA[i] = 0;
+    }
+    return;
+  }
+
+  this.transitionMode = 0;
 
   // Pick a far end point in the opposite-ish quadrant so we travel across the screen.
   const minFar2 = (minD * 0.72) * (minD * 0.72);

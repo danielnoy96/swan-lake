@@ -25,7 +25,7 @@
     this.next = nextActWithFrames(this.act);
     this.prepDone = false;
     // Give the flock an immediate "take off" so Stage A fills the whole space.
-    if (typeof Particles !== "undefined" && Particles && Particles.onTransitionStart) Particles.onTransitionStart();
+    if (typeof Particles !== "undefined" && Particles && Particles.onTransitionStart) Particles.onTransitionStart(this.act, this.next);
   },
   endTransition() {
     this.act = this.next;
