@@ -29,6 +29,15 @@ const Typography = {
   kind: new Uint8Array(0), // 0=dim, 1=hi
   anchor: new Uint32Array(0), // packed: (group<<24) | idx
 
+  // Cached small-text twinkle + jitter (updated incrementally for performance).
+  _tw: new Float32Array(0),
+  _sx: new Float32Array(0),
+  _sy: new Float32Array(0),
+  _stampOx: new Float32Array(0),
+  _stampOy: new Float32Array(0),
+  _cursor: 0,
+  _chunk: 1600,
+
   // Template data
   _big: null,
   _small: null,
@@ -92,6 +101,13 @@ const Typography = {
     this.seed = new Float32Array(this.n);
     this.kind = new Uint8Array(this.n);
     this.anchor = new Uint32Array(this.n);
+
+    this._tw = new Float32Array(this.n);
+    this._sx = new Float32Array(this.n);
+    this._sy = new Float32Array(this.n);
+    this._stampOx = new Float32Array(this.n);
+    this._stampOy = new Float32Array(this.n);
+    this._cursor = 0;
 
     for (let i = 0; i < this.n; i++) this.group[i] = i < bigN ? 0 : 1;
   },
@@ -310,12 +326,25 @@ const Typography = {
 
     seedGroup(0, 0, bigN, this._big);
     seedGroup(1, bigN, smallN, this._small);
+
+    // Initialize cached twinkle/jitter and 2nd-stamp offsets (avoids per-frame noise/hash for small text).
+    for (let i = 0; i < this.n; i++) {
+      this._tw[i] = 1;
+      this._sx[i] = 0;
+      this._sy[i] = 0;
+      this._stampOx[i] = (hash01((i + 1) * 2654435761) - 0.5) * 0.42;
+      this._stampOy[i] = (hash01((i + 1) * 1597334677) - 0.5) * 0.42;
+    }
   },
 
   update(level) {
     if (!this.ready || !tAdvanced) return;
     const n = this.n | 0;
     if (n <= 0) return;
+
+    const bigN = min(n, this.BIG_N | 0);
+    const smallStart = bigN;
+    const smallN = n - smallStart;
 
     const dt = min(0.08, max(0.004, abs(tDelta)));
     const kdt = constrain(dt / 0.03, 0.75, 1.8);
@@ -329,11 +358,11 @@ const Typography = {
     // Small text: keep motion micro to preserve readability.
     const wobSmall = (0.0012 + level * 0.0018) * kdt; // ~sub-pixel to ~1px in screen space
 
-    for (let i = 0; i < n; i++) {
+    // BIG particles: full update (heavier motion and texture).
+    for (let i = 0; i < bigN; i++) {
       const packed = this.anchor[i] >>> 0;
-      const gid = (packed >>> 24) & 0xff;
       const idx = packed & 0xffffff;
-      const tpl = gid === 0 ? this._big : this._small;
+      const tpl = this._big;
       if (!tpl || idx >= tpl.n) continue;
 
       const ax = tpl.cX[idx];
@@ -343,20 +372,6 @@ const Typography = {
 
       let x = this.x[i], y = this.y[i];
       let vx = this.vx[i], vy = this.vy[i];
-
-      if (gid !== 0) {
-        // For small text, avoid drifting particles: just wobble around the anchor.
-        const ox = (noise(this.seed[i] * 0.0123, t * 0.10) - 0.5) * 2.0 * wobSmall;
-        const oy = (noise(this.seed[i] * 0.0191 + 7.7, t * 0.10) - 0.5) * 2.0 * wobSmall;
-        let nx = ax + ox;
-        let ny = ay + oy;
-        if (this._maskAt(tpl, nx, ny) < tpl.thr) { nx = ax; ny = ay; }
-        this.x[i] = nx;
-        this.y[i] = ny;
-        this.vx[i] *= 0.25;
-        this.vy[i] *= 0.25;
-        continue;
-      }
 
       const spring = springBig;
       const flow = flowBig;
@@ -370,11 +385,9 @@ const Typography = {
       vy += sin(ang) * flow;
 
       // Along-stroke drift for big letters only (adds life without smearing small text).
-      if (gid === 0) {
-        const sgn = (hash01((i + 1) * 747796405) < 0.5 ? -1 : 1);
-        vx += txx * along * sgn;
-        vy += tyy * along * sgn;
-      }
+      const sgn = (hash01((i + 1) * 747796405) < 0.5 ? -1 : 1);
+      vx += txx * along * sgn;
+      vy += tyy * along * sgn;
 
       // Spring to anchor.
       vx += (ax - x) * spring;
@@ -407,6 +420,42 @@ const Typography = {
       this.vx[i] = vx;
       this.vy[i] = vy;
     }
+
+    // SMALL particles: incremental updates (keeps the look but avoids thousands of noise calls per frame).
+    if (smallN > 0) {
+      const tpl = this._small;
+      const step = max(64, min(this._chunk | 0, smallN));
+      let cur = this._cursor | 0;
+      const tTw = t * 0.05;
+      const tWb = t * 0.10;
+
+      for (let k = 0; k < step; k++) {
+        const i = smallStart + cur;
+        const packed = this.anchor[i] >>> 0;
+        const idx = packed & 0xffffff;
+        if (!tpl || idx >= tpl.n) { cur++; if (cur >= smallN) cur = 0; continue; }
+
+        const ax = tpl.cX[idx];
+        const ay = tpl.cY[idx];
+
+        // Cached twinkle (slow) + cached wobble offsets (micro).
+        this._tw[i] = 0.62 + 0.38 * noise(this.seed[i], tTw);
+        this._sx[i] = (noise(this.seed[i] * 0.0123, tWb) - 0.5) * 2.0 * wobSmall;
+        this._sy[i] = (noise(this.seed[i] * 0.0191 + 7.7, tWb) - 0.5) * 2.0 * wobSmall;
+
+        let nx = ax + this._sx[i];
+        let ny = ay + this._sy[i];
+        if (this._maskAt(tpl, nx, ny) < tpl.thr) { nx = ax; ny = ay; }
+        this.x[i] = nx;
+        this.y[i] = ny;
+        this.vx[i] *= 0.25;
+        this.vy[i] *= 0.25;
+
+        cur++;
+        if (cur >= smallN) cur = 0;
+      }
+      this._cursor = cur;
+    }
   },
 
   draw(level) {
@@ -427,38 +476,42 @@ const Typography = {
 
     // Base pass for readability (anchored).
     strokeWeight(this.BIG_SIZE);
-    for (let i = 0; i < this.n; i++) {
+    const bigN = min(this.n, this.BIG_N | 0);
+    // Batch big anchors by kind to reduce state changes (same visual output).
+    stroke(255, 255, 255, aBaseDim);
+    for (let i = 0; i < bigN; i++) {
+      if (this.kind[i]) continue;
       const packed = this.anchor[i] >>> 0;
-      const gid = (packed >>> 24) & 0xff;
-      if (gid !== 0) continue;
       const idx = packed & 0xffffff;
       const tpl = this._big;
       if (idx >= tpl.n) continue;
-      stroke(255, 255, 255, this.kind[i] ? aBaseHi : aBaseDim);
+      point(this.bigRect.x + tpl.cX[idx] * this.bigRect.w, this.bigRect.y + tpl.cY[idx] * this.bigRect.h);
+    }
+    stroke(255, 255, 255, aBaseHi);
+    for (let i = 0; i < bigN; i++) {
+      if (!this.kind[i]) continue;
+      const packed = this.anchor[i] >>> 0;
+      const idx = packed & 0xffffff;
+      const tpl = this._big;
+      if (idx >= tpl.n) continue;
       point(this.bigRect.x + tpl.cX[idx] * this.bigRect.w, this.bigRect.y + tpl.cY[idx] * this.bigRect.h);
     }
 
     strokeWeight(this.SMALL_SIZE);
-    for (let i = 0; i < this.n; i++) {
+    const smallStart = bigN;
+    for (let i = smallStart; i < this.n; i++) {
       const packed = this.anchor[i] >>> 0;
-      const gid = (packed >>> 24) & 0xff;
-      if (gid !== 1) continue;
       const idx = packed & 0xffffff;
       const tpl = this._small;
       if (idx >= tpl.n) continue;
 
-      // Slow twinkle (opacity only) keeps the small text readable but not flat.
-      const tw = 0.62 + 0.38 * noise(this.seed[i], t * 0.05);
+      // Cached twinkle keeps the look but avoids per-frame noise() on every particle.
+      const tw = this._tw[i] || 1;
       stroke(255, 255, 255, (this.kind[i] ? aBaseHi : aBaseDim) * tw);
       const ax = this.smallRect.x + tpl.cX[idx] * this.smallRect.w;
       const ay = this.smallRect.y + tpl.cY[idx] * this.smallRect.h;
       point(ax, ay);
-      // Tiny second stamp only for some particles (keeps it thin but still continuous).
-      if ((i & 1) === 0) {
-        const ox = (hash01((i + 1) * 2654435761) - 0.5) * 0.42;
-        const oy = (hash01((i + 1) * 1597334677) - 0.5) * 0.42;
-        point(ax + ox, ay + oy);
-      }
+      if ((i & 1) === 0) point(ax + this._stampOx[i], ay + this._stampOy[i]);
     }
 
     // Moving texture for big letters only (half-rate for perf).

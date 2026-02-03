@@ -1,5 +1,9 @@
 function preload() {
-  Typography.preload();
+  try {
+    Typography.preload();
+  } catch (e) {
+    window.__fatalError = e?.stack || String(e);
+  }
 }
 
 // Keep last valid ACT silhouette when sampler is catching up (prevents "break" on claps).
@@ -9,15 +13,19 @@ const _prefOff = { off: 0 };
 
 function setup() {
   createCanvas(windowWidth, windowHeight);
+  try {
+    mic = new p5.AudioIn();
+    amp = new p5.Amplitude();
 
-  mic = new p5.AudioIn();
-  amp = new p5.Amplitude();
-
-  Style.init();
-  resizeGrid();
-  Sampler.init();
-  Particles.resizeBins();
-  Particles.init();
+    Style.init();
+    resizeGrid();
+    Sampler.init();
+    Particles.resizeBins();
+    Particles.init();
+  } catch (e) {
+    window.__fatalError = e?.stack || String(e);
+    return;
+  }
 
   const styleBtn = (btn) => {
     btn.style("position", "fixed");
@@ -43,21 +51,35 @@ function setup() {
   styleBtn(btnAuto);
   btnAuto.mousePressed(() => {
     autoRun = !autoRun;
-    if (autoRun) audioStarted = true;
+    if (autoRun) {
+      // Auto mode doesn't require mic permission; allow running immediately.
+      audioStarted = true;
+    } else {
+      // If we were never granted mic permission, return to the tap-to-start screen.
+      if (!micRunning) audioStarted = false;
+    }
     btnAuto.html(autoRun ? "Auto: ON" : "Auto: OFF");
   });
 
-  Typography.init();
+  try {
+    Typography.init();
+  } catch (e) {
+    window.__fatalError = e?.stack || String(e);
+  }
 }
 
 function windowResized() {
   resizeCanvas(windowWidth, windowHeight);
-  Style.init();
-  resizeGrid();
-  Particles.resizeBins();
-  Particles.init();
-  Sampler.resetAllCaches();
-  Typography.resize();
+  try {
+    Style.init();
+    resizeGrid();
+    Particles.resizeBins();
+    Particles.init();
+    Sampler.resetAllCaches();
+    Typography.resize();
+  } catch (e) {
+    window.__fatalError = e?.stack || String(e);
+  }
 }
 
 function draw() {
@@ -281,7 +303,9 @@ function drawStartScreen() {
 }
 
 function mousePressed() {
-  if (audioStarted) return;
+  // Allow starting the mic even if we previously ran in Auto mode.
+  if (autoRun) return;
+  if (micRunning) return;
   userStartAudio();
   mic.start(() => {
     amp.setInput(mic);

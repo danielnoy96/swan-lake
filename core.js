@@ -23,14 +23,33 @@
     "white-space:pre-wrap",
     "display:none",
   ].join(";");
-  document.addEventListener("DOMContentLoaded", () => document.body.appendChild(el));
+  const attach = () => {
+    try {
+      if (el.parentNode) return;
+      if (document.body) document.body.appendChild(el);
+    } catch (_) {}
+  };
+  // Scripts in <head> (like CDN p5.js) can delay DOMContentLoaded if they hang.
+  // We attach immediately when possible so errors are visible even if DOMContentLoaded is late.
+  attach();
+  document.addEventListener("DOMContentLoaded", attach);
   const show = (msg) => {
     try {
+      attach();
       window.__fatalError = msg;
       el.textContent = msg;
       el.style.display = "block";
     } catch (_) {}
   };
+  // If CDN scripts fail (common on phones/offline), p5 never loads and the screen stays black.
+  // Detect that early and show a clear message.
+  window.setTimeout(() => {
+    try {
+      if (typeof window.p5 === "undefined") {
+        show("[ERROR]\np5.js failed to load.\nCheck internet/CDN access, or host p5 locally.");
+      }
+    } catch (_) {}
+  }, 1500);
   window.addEventListener("error", (e) => {
     const msg = String(e?.message || e || "Unknown error");
     const src = e?.filename ? `\n@ ${e.filename}:${e.lineno || 0}:${e.colno || 0}` : "";
