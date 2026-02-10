@@ -14,7 +14,9 @@ let _debugDtSec = 0;
 let _debugRate = 0;
 
 function setup() {
-  createCanvas(windowWidth, windowHeight);
+  const cnv = createCanvas(windowWidth, windowHeight);
+  pixelDensity(1);
+  try { cnv?.style?.("display", "block"); } catch (_) {}
   try {
     mic = new p5.AudioIn();
     amp = new p5.Amplitude();
@@ -38,6 +40,7 @@ function setup() {
 
 function windowResized() {
   resizeCanvas(windowWidth, windowHeight);
+  pixelDensity(1);
   try {
     Style.init();
     resizeGrid();

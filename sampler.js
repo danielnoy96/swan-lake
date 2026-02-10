@@ -50,7 +50,7 @@ const Sampler = {
     const br = (this.g.pixels[px] + this.g.pixels[px + 1] + this.g.pixels[px + 2]) / 765;
     return br * a;
   },
-  _compute(img, outCounts) {
+  _compute(img, outCounts, seed01) {
     fitRect(img.width, img.height, this.w, this.h, this.rG);
     fitRect(img.width, img.height, width, height, this.rC);
     const rG = this.rG, rC = this.rC;
@@ -150,7 +150,9 @@ const Sampler = {
     let total = 0;
     for (let i = 0; i < CELLS; i++) { total += this.weights[i]; this.cdf[i] = total; }
     const step = total / N;
-    let u = random(step);
+    // Deterministic phase so results are stable across different async load orders (local vs GitHub Pages).
+    // `seed01` should be in [0,1). Fallback to random if not provided.
+    let u = (typeof seed01 === "number" && seed01 >= 0) ? (seed01 % 1) * step : random(step);
     let i = 0;
     for (let k = 0; k < N; k++) {
       const th = u + k * step;
@@ -188,7 +190,8 @@ const Sampler = {
             const cc = this.cache[a];
             if (!cc || cc.cycle !== cycle) return;
             const off = idx * CELLS;
-            this._compute(img, cc.counts.subarray(off, off + CELLS));
+            const seed01 = hash01(((a + 1) * 73856093) ^ ((idx + 1) * 19349663) ^ (cycle * 83492791));
+            this._compute(img, cc.counts.subarray(off, off + CELLS), seed01);
             cc.done[idx] = 1;
           } catch (e) {
             try {
