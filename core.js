@@ -90,10 +90,9 @@ const MIC_THRESHOLD = 0.03;
 const AUTO_SPEED = 1.0;
 // Deterministic seed so local vs GitHub Pages initialize identically.
 const SIM_SEED = 1337;
-// Force a fixed backing-store density for consistent particle rendering across hosts/devices.
-// Using devicePixelRatio can make points/strokes look noticeably different between localhost and GitHub Pages
-// (per-site zoom / DPR differences), even when the simulation hashes match.
-const PIXEL_DENSITY_CAP = 1.0;
+// Backing-store density cap for performance (still uses devicePixelRatio up to this cap).
+// Keeping this >1 avoids the "upscaled/soft" look on high-DPR hosts (e.g., GitHub Pages at 125%/150% zoom).
+const PIXEL_DENSITY_CAP = 1.5;
 function applyPixelDensity() {
   try {
     const dpr = max(1, (typeof window !== "undefined" ? (window.devicePixelRatio || 1) : 1));
