@@ -84,8 +84,33 @@ const TRANSITION_DURATION = 2.6, DANCE_PORTION = 0.78;
 const MIC_THRESHOLD = 0.03;
 // Auto mode speed in sound-seconds per real second (applied with dt).
 const AUTO_SPEED = 1.0;
-// Rendering pixel density cap (prevents huge retina buffers, but keeps GitHub Pages zoom differences consistent).
-const PIXEL_DENSITY_CAP = 1.5;
+// Page zoom compensation:
+// GitHub Pages can end up with a different per-site zoom than localhost (even on the same device/browser),
+// which changes `windowWidth/windowHeight` and therefore the grid resolution + particle look.
+// We measure zoom and compensate the grid cell size so the simulation stays consistent.
+let pageZoom = 1;
+function _measurePageZoom() {
+  try {
+    const d = document.createElement("div");
+    d.style.cssText = "position:absolute;left:-1000px;top:-1000px;width:1in;height:1in;";
+    document.body.appendChild(d);
+    const px = d.getBoundingClientRect().width || 96;
+    d.remove();
+    // 1in should be 96 CSS px at 100% zoom.
+    const z = px / 96;
+    if (isFinite(z) && z > 0.2 && z < 6) return z;
+  } catch (_) {}
+  // Fallback (less accurate for zoom, but better than nothing)
+  try {
+    const dpr = (typeof window !== "undefined" ? (window.devicePixelRatio || 1) : 1);
+    return isFinite(dpr) && dpr > 0 ? dpr : 1;
+  } catch (_) {}
+  return 1;
+}
+function updatePageZoom() {
+  // Clamp to avoid wild values on some mobile browsers.
+  pageZoom = constrain(_measurePageZoom(), 0.5, 3);
+}
 
 // Scene visibility (fade in/out based on mic level; independent of sound-time `t` so it can fade out on silence)
 const VIS_IN = 0.16;
@@ -131,19 +156,11 @@ let COLS = 1, ROWS = 1, CELLS = 1;
 let gridX0 = 0, gridY0 = 0;
 let cellW = 1, cellH = 1, invCellW = 1, invCellH = 1;
 
-function applyPixelDensity() {
-  try {
-    const dpr = max(1, (typeof window !== "undefined" ? (window.devicePixelRatio || 1) : 1));
-    pixelDensity(min(PIXEL_DENSITY_CAP, dpr));
-  } catch (_) {}
-}
-
 function resizeGrid() {
-  const pd = max(1, (typeof pixelDensity === "function" ? pixelDensity() : 1) || 1);
-  // Keep grid cell size stable in *physical* pixels across different site zoom / devicePixelRatio.
-  // This prevents GitHub Pages (often a different per-site zoom) from changing the silhouette look.
-  cellW = CELL_SIZE / pd;
-  cellH = CELL_SIZE / pd;
+  const z = max(0.5, (typeof pageZoom === "number" ? pageZoom : 1) || 1);
+  // Compensate for per-site zoom so the grid resolution stays consistent.
+  cellW = CELL_SIZE / z;
+  cellH = CELL_SIZE / z;
   COLS = max(1, floor(width / cellW));
   ROWS = max(1, floor(height / cellH));
   CELLS = COLS * ROWS;
