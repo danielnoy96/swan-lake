@@ -707,13 +707,19 @@
     }
   },
   draw() {
-    noStroke();
+    // IMPORTANT: keep all style changes inside a push/pop so we never leak blendMode (ADD)
+    // into the rest of the sketch. Leaking ADD causes the background to "accumulate" to white.
+    push();
+    noFill();
     const aScene = typeof sceneA === "number" ? sceneA : 1;
-    if (aScene <= 0.004) return;
+    if (aScene <= 0.004) { pop(); return; }
     // Base: white lights (additive). During Stage A we render a head->tail alpha gradient
     // so the ribbon reads as "less saturated start" -> "more saturated end" like the reference.
+    // Diamond look: square stroke caps in a rotated drawing space + inverse-rotated coordinates.
+    // This keeps particle *positions* the same in screen space while rotating the stamp by 45°.
+    strokeCap(PROJECT);
+    strokeJoin(MITER);
     blendMode(ADD);
-    strokeCap(ROUND);
 
     const p = Acts && Acts.mode === "TRANSITION"
       ? constrain((t - Acts.transitionStartT) / max(1e-6, TRANSITION_DURATION), 0, 1)
@@ -726,27 +732,55 @@
     // NOTE: We intentionally keep subpixel positions and fractional sizes here.
     // This produces the "diamond/45°" pixel artifact you liked (vs perfectly aligned squares).
     const swBase = max(1.0, PARTICLE_SIZE * sizeScale);
-    const hx = (v) => ((v | 0) + 0.5);
+
+    const c = 0.7071067811865476; // cos(PI/4)
+    const s = 0.7071067811865476; // sin(PI/4)
+    // Half-pixel snap in rotated space. Use floor() so negatives snap correctly too.
+    const hx = (v) => (floor(v) + 0.5);
+    // Use a tiny line segment with square caps as a deterministic "diamond" stamp.
+    // (p5 `point()` can look round on some platforms.)
+    const eps = 0.01;
+    rotate(PI / 4);
 
     if (!stageA) {
       strokeWeight(swBase);
       stroke(255, 255, 255, LIGHT_ALPHA * aScene);
-      for (let i = 0; i < N; i++) point(hx(this.x[i]), hx(this.y[i]));
+      for (let i = 0; i < N; i++) {
+        const x = this.x[i], y = this.y[i];
+        const px = hx(x * c + y * s);
+        const py = hx(-x * s + y * c);
+        line(px, py, px + eps, py);
+      }
     } else {
       // Tail (faded)
       strokeWeight(max(1.0, swBase - 0.2 * sizeScale));
       stroke(255, 255, 255, (LIGHT_ALPHA * 0.28) * aScene);
-      for (let i = 0; i < N; i++) if (this.slotU[i] > 0.58) point(hx(this.x[i]), hx(this.y[i]));
+      for (let i = 0; i < N; i++) if (this.slotU[i] > 0.58) {
+        const x = this.x[i], y = this.y[i];
+        const px = hx(x * c + y * s);
+        const py = hx(-x * s + y * c);
+        line(px, py, px + eps, py);
+      }
 
       // Mid
       strokeWeight(swBase);
       stroke(255, 255, 255, (LIGHT_ALPHA * 0.62) * aScene);
-      for (let i = 0; i < N; i++) if (this.slotU[i] > 0.22 && this.slotU[i] <= 0.58) point(hx(this.x[i]), hx(this.y[i]));
+      for (let i = 0; i < N; i++) if (this.slotU[i] > 0.22 && this.slotU[i] <= 0.58) {
+        const x = this.x[i], y = this.y[i];
+        const px = hx(x * c + y * s);
+        const py = hx(-x * s + y * c);
+        line(px, py, px + eps, py);
+      }
 
       // Head (more saturated)
       strokeWeight(swBase + 1.2 * sizeScale);
       stroke(255, 255, 255, min(255, (LIGHT_ALPHA * 1.05) * aScene));
-      for (let i = 0; i < N; i++) if (this.slotU[i] <= 0.22) point(hx(this.x[i]), hx(this.y[i]));
+      for (let i = 0; i < N; i++) if (this.slotU[i] <= 0.22) {
+        const x = this.x[i], y = this.y[i];
+        const px = hx(x * c + y * s);
+        const py = hx(-x * s + y * c);
+        line(px, py, px + eps, py);
+      }
     }
 
     // Color overlay is *localized* (grouped) around a focus point.
@@ -762,11 +796,17 @@
 
       // Majority tint: one calm "wash" over the focus region (no contouring by density)
       const aWash = (Render.tintA * aScene) | 0;
+      strokeWeight(swBase);
       stroke(red(Render.hi), green(Render.hi), blue(Render.hi), aWash);
       for (let i = 0; i < N; i++) {
         const dx = this.x[i] - fx, dy = this.y[i] - fy;
         const d2 = dx * dx + dy * dy;
-        if (d2 <= outer2) point(hx(this.x[i]), hx(this.y[i]));
+        if (d2 <= outer2) {
+          const x = this.x[i], y = this.y[i];
+          const px = hx(x * c + y * s);
+          const py = hx(-x * s + y * c);
+          line(px, py, px + eps, py);
+        }
       }
 
       // Minority tint: a single "stain" blob sitting on top of the wash (irregular edge via noise).
@@ -791,12 +831,17 @@
           const denK = lerp(1.15, 0.85, den);
 
           const edge = stainR * denK * (0.82 + 0.30 * n);
-          if (d2 <= edge * edge) point(hx(this.x[i]), hx(this.y[i]));
+          if (d2 <= edge * edge) {
+            const x = this.x[i], y = this.y[i];
+            const px = hx(x * c + y * s);
+            const py = hx(-x * s + y * c);
+            line(px, py, px + eps, py);
+          }
         }
       }
     }
 
-    blendMode(BLEND);
+    pop();
   },
 };
 
