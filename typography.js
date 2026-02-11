@@ -496,6 +496,7 @@ const Typography = {
     push();
     blendMode(ADD);
     strokeCap(ROUND);
+    const hx = (v) => ((v | 0) + 0.5);
 
     // Base pass for readability (anchored).
     // Keep subpixel positions so the typography matches the "diamond" particle look.
@@ -509,7 +510,7 @@ const Typography = {
       const idx = packed & 0xffffff;
       const tpl = this._big;
       if (idx >= tpl.n) continue;
-      point(this.bigRect.x + tpl.cX[idx] * this.bigRect.w, this.bigRect.y + tpl.cY[idx] * this.bigRect.h);
+      point(hx(this.bigRect.x + tpl.cX[idx] * this.bigRect.w), hx(this.bigRect.y + tpl.cY[idx] * this.bigRect.h));
     }
     stroke(255, 255, 255, aBaseHi);
     for (let i = 0; i < bigN; i++) {
@@ -518,7 +519,7 @@ const Typography = {
       const idx = packed & 0xffffff;
       const tpl = this._big;
       if (idx >= tpl.n) continue;
-      point(this.bigRect.x + tpl.cX[idx] * this.bigRect.w, this.bigRect.y + tpl.cY[idx] * this.bigRect.h);
+      point(hx(this.bigRect.x + tpl.cX[idx] * this.bigRect.w), hx(this.bigRect.y + tpl.cY[idx] * this.bigRect.h));
     }
 
     strokeWeight(this.SMALL_SIZE);
@@ -534,8 +535,8 @@ const Typography = {
       stroke(255, 255, 255, (this.kind[i] ? aBaseHi : aBaseDim) * tw);
       const ax = this.smallRect.x + tpl.cX[idx] * this.smallRect.w;
       const ay = this.smallRect.y + tpl.cY[idx] * this.smallRect.h;
-      point(ax, ay);
-      if ((i & 1) === 0) point(ax + this._stampOx[i], ay + this._stampOy[i]);
+      point(hx(ax), hx(ay));
+      if ((i & 1) === 0) point(hx(ax + this._stampOx[i]), hx(ay + this._stampOy[i]));
     }
 
     // Moving texture for big letters only (half-rate for perf).
@@ -547,7 +548,7 @@ const Typography = {
       if ((i & 1) === 1) continue;
       const tw = 0.5 + 0.5 * sin(t * 0.12 + this.seed[i]);
       stroke(255, 255, 255, (this.kind[i] ? aMoveHi : aMoveDim) * (0.75 + 0.25 * tw));
-      point(this.bigRect.x + this.x[i] * this.bigRect.w, this.bigRect.y + this.y[i] * this.bigRect.h);
+      point(hx(this.bigRect.x + this.x[i] * this.bigRect.w), hx(this.bigRect.y + this.y[i] * this.bigRect.h));
     }
 
     blendMode(BLEND);

@@ -726,26 +726,27 @@
     // NOTE: We intentionally keep subpixel positions and fractional sizes here.
     // This produces the "diamond/45°" pixel artifact you liked (vs perfectly aligned squares).
     const swBase = max(1.0, PARTICLE_SIZE * sizeScale);
+    const hx = (v) => ((v | 0) + 0.5);
 
     if (!stageA) {
       strokeWeight(swBase);
       stroke(255, 255, 255, LIGHT_ALPHA * aScene);
-      for (let i = 0; i < N; i++) point(this.x[i], this.y[i]);
+      for (let i = 0; i < N; i++) point(hx(this.x[i]), hx(this.y[i]));
     } else {
       // Tail (faded)
       strokeWeight(max(1.0, swBase - 0.2 * sizeScale));
       stroke(255, 255, 255, (LIGHT_ALPHA * 0.28) * aScene);
-      for (let i = 0; i < N; i++) if (this.slotU[i] > 0.58) point(this.x[i], this.y[i]);
+      for (let i = 0; i < N; i++) if (this.slotU[i] > 0.58) point(hx(this.x[i]), hx(this.y[i]));
 
       // Mid
       strokeWeight(swBase);
       stroke(255, 255, 255, (LIGHT_ALPHA * 0.62) * aScene);
-      for (let i = 0; i < N; i++) if (this.slotU[i] > 0.22 && this.slotU[i] <= 0.58) point(this.x[i], this.y[i]);
+      for (let i = 0; i < N; i++) if (this.slotU[i] > 0.22 && this.slotU[i] <= 0.58) point(hx(this.x[i]), hx(this.y[i]));
 
       // Head (more saturated)
       strokeWeight(swBase + 1.2 * sizeScale);
       stroke(255, 255, 255, min(255, (LIGHT_ALPHA * 1.05) * aScene));
-      for (let i = 0; i < N; i++) if (this.slotU[i] <= 0.22) point(this.x[i], this.y[i]);
+      for (let i = 0; i < N; i++) if (this.slotU[i] <= 0.22) point(hx(this.x[i]), hx(this.y[i]));
     }
 
     // Color overlay is *localized* (grouped) around a focus point.
@@ -765,7 +766,7 @@
       for (let i = 0; i < N; i++) {
         const dx = this.x[i] - fx, dy = this.y[i] - fy;
         const d2 = dx * dx + dy * dy;
-        if (d2 <= outer2) point(this.x[i], this.y[i]);
+        if (d2 <= outer2) point(hx(this.x[i]), hx(this.y[i]));
       }
 
       // Minority tint: a single "stain" blob sitting on top of the wash (irregular edge via noise).
@@ -790,7 +791,7 @@
           const denK = lerp(1.15, 0.85, den);
 
           const edge = stainR * denK * (0.82 + 0.30 * n);
-          if (d2 <= edge * edge) point(this.x[i], this.y[i]);
+          if (d2 <= edge * edge) point(hx(this.x[i]), hx(this.y[i]));
         }
       }
     }
