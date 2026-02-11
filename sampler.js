@@ -63,7 +63,11 @@ const Sampler = {
   },
   _compute(img, outCounts, seed01) {
     fitRect(img.width, img.height, this.w, this.h, this.rG);
-    fitRect(img.width, img.height, width, height, this.rC);
+    // IMPORTANT: map the source into the *grid rect* (not the full canvas).
+    // This keeps cell assignment stable when the canvas aspect/size changes across hosts.
+    fitRect(img.width, img.height, COLS * cellW, ROWS * cellH, this.rC);
+    this.rC.x += gridX0;
+    this.rC.y += gridY0;
     const rG = this.rG, rC = this.rC;
 
     this.g.clear(); this.g.background(0); this.g.imageMode(CORNER);

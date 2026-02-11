@@ -79,6 +79,10 @@ const FRAME_STEP = { 1: 1, 2: 1, 3: 1, 4: 1 };
 
 const TARGET_W = 160, TARGET_H = 284;
 const CELL_SIZE = 18; // square grid size (px) (tune: larger -> fewer cells -> denser silhouettes)
+// Fixed simulation grid (keeps particle redistribution stable across different viewport sizes/hosts).
+// This matches the common "good" resolution from local runs.
+const GRID_COLS = 137;
+const GRID_ROWS = 74;
 const N = 4200, BLACK_PCT = 0.1;
 const TRANSITION_DURATION = 2.6, DANCE_PORTION = 0.78;
 const MIC_THRESHOLD = 0.03;
@@ -173,18 +177,21 @@ let gridX0 = 0, gridY0 = 0;
 let cellW = 1, cellH = 1, invCellW = 1, invCellH = 1;
 
 function resizeGrid() {
-  const dpr = max(1, (typeof window !== "undefined" ? (window.devicePixelRatio || 1) : 1));
-  // IMPORTANT: Use *physical* pixel scaling for the simulation grid.
-  // On the same device/browser, different hosts can end up with different CSS pixel scaling
-  // (e.g., GitHub Pages vs localhost), which changes `windowWidth/windowHeight` and the grid.
-  // Using `CELL_SIZE / devicePixelRatio` keeps the grid stable in physical pixels.
-  cellW = CELL_SIZE / dpr;
-  cellH = CELL_SIZE / dpr;
-  COLS = max(1, floor(width / cellW));
-  ROWS = max(1, floor(height / cellH));
+  // Letterbox the simulation to a fixed grid resolution so the computed density field
+  // (and therefore particle look) stays consistent across different viewport sizes/aspects.
+  COLS = GRID_COLS;
+  ROWS = GRID_ROWS;
   CELLS = COLS * ROWS;
-  gridX0 = (width - COLS * cellW) * 0.5;
-  gridY0 = (height - ROWS * cellH) * 0.5;
+
+  const aspect = COLS / max(1, ROWS);
+  let gw = min(width, height * aspect);
+  let gh = gw / aspect;
+  if (gh > height) { gh = height; gw = gh * aspect; }
+
+  gridX0 = (width - gw) * 0.5;
+  gridY0 = (height - gh) * 0.5;
+  cellW = gw / COLS;
+  cellH = gh / ROWS;
   invCellW = 1 / max(1e-6, cellW);
   invCellH = 1 / max(1e-6, cellH);
   Sampler.realloc();
