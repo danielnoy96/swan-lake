@@ -33,6 +33,20 @@ const Render = {
   tintB: 0,
   maxD: 1,
   colorAmt: 0,
+  // Optional clip used by the boot/loading reveal.
+  clipOn: false,
+  clipX: 0,
+  // Organic reveal mask (boot/loading)
+  revealOn: false,
+  revealP: 0,
+  revealFreq: 0.003,
+  revealSeed: 0,
+  revealSx0: 0,
+  revealSy0: 0,
+  revealSx1: 0,
+  revealSy1: 0,
+  revealSx2: 0,
+  revealSy2: 0,
 };
 
 const Style = {

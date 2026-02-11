@@ -4,6 +4,12 @@ function preload() {
   } catch (e) {
     window.__fatalError = e?.stack || String(e);
   }
+  // Loading screen image (revealed by particles during boot)
+  try {
+    window.__loadingImg = loadImage("assets/loading/loadingscreen.jpg");
+  } catch (_) {
+    window.__loadingImg = null;
+  }
 }
 
 // Keep last valid ACT silhouette when sampler is catching up (prevents "break" on claps).
@@ -36,6 +42,10 @@ let _bootReqTick = 0;
 const BOOT_REQ_PER_FRAME = 6;   // request this many unique frames per draw (I/O), compute remains capped
 const BOOT_SCAN_LIMIT = 600;    // max skips when searching for an unrequested frame
 const BOOT_QUEUE_MAX = 220;     // avoid unbounded queue growth
+let _loadingCounts = null;
+let _loadingCountsOK = false;
+let _bootShapeApplied = false;
+let _bootSeedsInited = false;
 function _ensureMainCanvasCss() {
   try {
     if (!_mainCanvasElt) _mainCanvasElt = document.getElementById ? document.getElementById("mainCanvas") : null;
@@ -48,13 +58,192 @@ function _ensureMainCanvasCss() {
     _mainCanvasElt.style.display = "block";
   } catch (_) {}
 }
+function _initLoadingCountsIfNeeded() {
+  if (_loadingCountsOK) return;
+  try {
+    const img = window.__loadingImg;
+    if (!img || !img.width) return;
+
+    // Build the loading silhouette at higher sampling resolution so thin top/bottom text doesn't vanish.
+    const maxDim = 720;
+    let gW = 560;
+    let gH = max(64, round((img.height / max(1, img.width)) * gW));
+    if (max(gW, gH) > maxDim) {
+      const s = maxDim / max(gW, gH);
+      gW = max(64, round(gW * s));
+      gH = max(64, round(gH * s));
+    }
+    const g = createGraphics(gW, gH);
+    g.pixelDensity(1);
+    g.noSmooth();
+    g.clear();
+    g.background(0);
+    g.imageMode(CORNER);
+    try { if (g.drawingContext) g.drawingContext.imageSmoothingEnabled = false; } catch (_) {}
+
+    // Draw stretched so the loading image always maps to the full grid (no letterboxing / perceived crop).
+    g.image(img, 0, 0, gW, gH);
+    g.loadPixels();
+
+    // Detect "white background + dark ink" and invert so the ink becomes the silhouette.
+    let meanBr = 0;
+    const sampleN = 96;
+    for (let s = 0; s < sampleN; s++) {
+      const x = (s * 37) % gW;
+      const y = (s * 91) % gH;
+      const p = 4 * (y * gW + x);
+      const br = (g.pixels[p] + g.pixels[p + 1] + g.pixels[p + 2]) / 765;
+      meanBr += br;
+    }
+    meanBr /= sampleN;
+    const invert = meanBr > 0.62;
+
+    const weights = new Float32Array(CELLS);
+    const pixC = new Uint16Array(CELLS);
+    const out = new Uint16Array(CELLS);
+
+    // Map full buffer -> full grid (stretch). Deterministic and avoids "top cut" on thin text.
+    for (let y = 0; y < gH; y++) {
+      const rr = ((y + 0.5) * ROWS / gH) | 0;
+      if (rr < 0 || rr >= ROWS) continue;
+      const row = y * gW;
+      for (let x = 0; x < gW; x++) {
+        const cc = ((x + 0.5) * COLS / gW) | 0;
+        if (cc < 0 || cc >= COLS) continue;
+        const cell = rr * COLS + cc;
+        const p = 4 * (row + x);
+        const a = g.pixels[p + 3] / 255;
+        if (a <= 0.02) continue;
+        const br0 = (g.pixels[p] + g.pixels[p + 1] + g.pixels[p + 2]) / 765;
+        const br = invert ? (1 - br0) : br0;
+        if (br <= 0.02) continue;
+        weights[cell] += br * a;
+        if (pixC[cell] < 65535) pixC[cell]++;
+      }
+    }
+
+    let maxBr = 0;
+    for (let i = 0; i < CELLS; i++) {
+      const pc = pixC[i];
+      if (pc === 0) { weights[i] = 0; continue; }
+      const br = weights[i] / pc;
+      weights[i] = br;
+      if (br > maxBr) maxBr = br;
+    }
+    if (maxBr <= 1e-6) {
+      out.fill(0);
+      out[((ROWS >> 1) * COLS + (COLS >> 1)) | 0] = N;
+    } else {
+      let total = 0;
+      // Higher contrast for the loader so the image reads clearly.
+      // (Keep some lift so thin strokes don't disappear.)
+      const thr = invert ? 0.06 : 0.04;
+      const gamma = 1.65;
+      const lift = 0.02;
+      const cdf = new Float32Array(CELLS);
+      for (let i = 0; i < CELLS; i++) {
+        const brN = weights[i] / maxBr;
+        const x = (brN - thr) / max(1e-6, 1 - thr);
+        if (x <= 0) { weights[i] = 0; continue; }
+        const w = pow(x, gamma) + lift * x;
+        weights[i] = w;
+        total += w;
+        cdf[i] = total;
+      }
+      out.fill(0);
+      if (total <= 1e-9) {
+        out[((ROWS >> 1) * COLS + (COLS >> 1)) | 0] = N;
+      } else {
+        const step = total / N;
+        let u = 0.37 * step;
+        let i = 0;
+        for (let k = 0; k < N; k++) {
+          const th = u + k * step;
+          while (i < CELLS - 1 && cdf[i] < th) i++;
+          out[i]++;
+        }
+      }
+    }
+
+    _loadingCounts = out;
+    _loadingCountsOK = true;
+  } catch (_) {}
+}
+function _applyLoadingShapeToParticles() {
+  if (_bootShapeApplied) return;
+  if (!_loadingCountsOK || !_loadingCounts) return;
+  try {
+    Particles.setDesired(_loadingCounts, 0, 0, 0);
+    Particles.setWalkFromCounts(_loadingCounts, 0, 0);
+    Particles.softRetargetToDesired();
+    _bootShapeApplied = true;
+  } catch (_) {}
+}
 function drawLoadingScreen(pct, ready, total) {
+  // Pretty boot: particle-reveal of the loading image (organic build).
+  // (We keep the old text-based loader below as fallback; early-return from the pretty path.)
+  const p = constrain(pct, 0, 1);
+
+  // Ensure we have a target silhouette to reveal.
+  _initLoadingCountsIfNeeded();
+  _applyLoadingShapeToParticles();
+
+  background(0);
+  sceneVis = 1;
+  sceneA = 1;
+
+  try {
+    Render.tintA = 0;
+    Render.tintB = 0;
+    Render.clipOn = false;
+    Render.revealOn = true;
+    Render.revealP = p;
+    Render.revealFreq = 0.0028;
+    Render.revealSeed = 42.0;
+    if (!_bootSeedsInited) {
+      _bootSeedsInited = true;
+      // 3-seed blob growth (triangle) so it doesn't read as left->right.
+      Render.revealSx0 = width * 0.50;
+      Render.revealSy0 = height * 0.52;
+      Render.revealSx1 = width * 0.36;
+      Render.revealSy1 = height * 0.40;
+      Render.revealSx2 = width * 0.64;
+      Render.revealSy2 = height * 0.68;
+    }
+  } catch (_) {}
+
+  // Drive particles toward the loading silhouette during boot even though `t` is not advancing.
+  // We do NOT advance `t`; we only provide a small dt for the integrator.
+  tAdvanced = true;
+  tDelta = 0.02;
+  try {
+    computeDeficitHotspots();
+    Particles.rebalancePasses(6);
+    Particles.updateInsideCells(0, 0.10, 0.12, 0);
+    Particles.separate(0.018, 3.2);
+  } catch (_) {}
+
+  try { Particles.draw(); } catch (_) {}
+  try {
+    Render.revealOn = false;
+    Render.clipOn = false;
+  } catch (_) {}
+
+  push();
+  fill(255, 220);
+  noStroke();
+  textAlign(CENTER, TOP);
+  textSize(14);
+  text(`Loading... ${Math.round(p * 100)}%`, width / 2, 14);
+  pop();
+  return;
+
   background(0);
   fill(255);
   noStroke();
   textAlign(CENTER, CENTER);
   textSize(16);
-  const msg = `Loading… ${Math.round(pct * 100)}%  (${ready}/${total})`;
+  const msg = `Loading... ${Math.round(pct * 100)}%  (${ready}/${total})`;
   text(msg, width / 2, height / 2);
   textSize(12);
   text("Preparing all frames for smooth playback", width / 2, height / 2 + 22);
@@ -76,6 +265,10 @@ function _bootInitIfNeeded() {
   _bootActI = 0;
   _bootIdx = 0;
   _bootReqTick = 0;
+  _initLoadingCountsIfNeeded();
+  _bootShapeApplied = false;
+  _applyLoadingShapeToParticles();
+  _bootSeedsInited = false;
 }
 function _bootStepAll() {
   if (!booting) return true;
@@ -130,6 +323,19 @@ function _bootStepAll() {
   // Consider boot complete only when everything is computed (or failed) and queues are drained.
   if (ready >= _bootTotal && q === 0 && cq === 0 && inf === 0 && typOK) {
     booting = false;
+    try {
+      Render.clipOn = false;
+      Render.revealOn = false;
+    } catch (_) {}
+    // Restore letterboxed simulation grid for the real sketch.
+    try {
+      resizeGrid();
+      // `resizeGrid()` reallocates `Particles.cellCounts`, so rebuild counts from current positions
+      // or redistribution will never happen and we'll stay stuck in the loading silhouette.
+      if (typeof Particles !== "undefined" && Particles && typeof Particles.remapCellsFromPositions === "function") {
+        Particles.remapCellsFromPositions();
+      }
+    } catch (_) {}
     return true;
   }
 
@@ -192,9 +398,20 @@ function setup() {
     Style.init();
     updatePageZoom();
     resizeGrid();
+    // During boot, use a full-bleed grid so the loading image isn't "cut" on tall viewports.
+    if (booting) {
+      gridX0 = 0;
+      gridY0 = 0;
+      cellW = width / COLS;
+      cellH = height / ROWS;
+      invCellW = 1 / max(1e-6, cellW);
+      invCellH = 1 / max(1e-6, cellH);
+    }
     Sampler.init();
     Particles.resizeBins();
     Particles.init();
+    _initLoadingCountsIfNeeded();
+    _bootShapeApplied = false;
   } catch (e) {
     window.__fatalError = e?.stack || String(e);
     return;
@@ -225,9 +442,18 @@ function windowResized() {
     Style.init();
     updatePageZoom();
     resizeGrid();
+    if (booting) {
+      gridX0 = 0;
+      gridY0 = 0;
+      cellW = width / COLS;
+      cellH = height / ROWS;
+      invCellW = 1 / max(1e-6, cellW);
+      invCellH = 1 / max(1e-6, cellH);
+    }
     Particles.resizeBins();
     Particles.init();
     Typography.resize();
+    _bootShapeApplied = false;
   } catch (e) {
     window.__fatalError = e?.stack || String(e);
   }
@@ -256,7 +482,9 @@ function draw() {
     } catch (_) {}
   }
 
-  if (!audioStarted && !autoRun) {
+  // If neither Auto nor Mic is running, keep showing the start screen (even if `audioStarted`
+  // was previously true due to Auto mode). This prevents a "dead" state where nothing renders.
+  if (!autoRun && !micRunning) {
     background(0);
     drawStartScreen();
     return;
@@ -527,10 +755,9 @@ function drawStartScreen() {
 }
 
 function mousePressed() {
-  // While booting, ignore input (we need the cache ready for smooth playback).
-  if (booting) return;
-  // Allow starting the mic even if we previously ran in Auto mode.
-  if (autoRun) return;
+  // Allow starting the mic at any time (even during boot / even if Auto was toggled),
+  // so "sound mode" is always available on mobile (no keyboard).
+  if (compareMode) return;
   if (micRunning) return;
   if (!_soundOK || !mic || typeof mic.start !== "function") {
     // Don't crash on hosts where p5.sound didn't load; keep the sketch running.
@@ -542,8 +769,16 @@ function mousePressed() {
     amp.setInput(mic);
     audioStarted = true;
     micRunning = true;
+    // Prefer mic-driven time once the mic is running (prevents "only Auto works").
+    autoRun = false;
     Acts.actStartT = t;
   });
+}
+
+function touchStarted() {
+  // Mobile browsers require a user gesture for audio; treat touch like mouse.
+  try { mousePressed(); } catch (_) {}
+  return false;
 }
 
 function keyPressed() {

@@ -55,6 +55,15 @@
     this.desired = new Uint16Array(CELLS);
     this.walk = new Uint8Array(CELLS);
   },
+  remapCellsFromPositions() {
+    if (this.cellCounts.length !== CELLS) this.realloc();
+    this.cellCounts.fill(0);
+    for (let i = 0; i < N; i++) {
+      const c = posToCell(this.x[i], this.y[i]);
+      this.cell[i] = c;
+      this.cellCounts[c] = min(65535, this.cellCounts[c] + 1);
+    }
+  },
   resizeBins() {
     this.binsX = max(1, ceil(width / this.binSize));
     this.binsY = max(1, ceil(height / this.binSize));
@@ -725,6 +734,48 @@
       ? constrain((t - Acts.transitionStartT) / max(1e-6, TRANSITION_DURATION), 0, 1)
       : 1;
     const stageA = Acts && Acts.mode === "TRANSITION" && p < DANCE_PORTION;
+    const clipOn = !!(Render && Render.clipOn);
+    const clipX = clipOn ? (Render.clipX || 0) : 0;
+    const revealOn = !!(Render && Render.revealOn);
+    const revealP = revealOn ? constrain(Render.revealP || 0, 0, 1) : 1;
+    const revealFreq = revealOn ? (Render.revealFreq || 0.003) : 0.003;
+    const revealSeed = revealOn ? (Render.revealSeed || 0) : 0;
+    const sx0 = revealOn ? (Render.revealSx0 || width * 0.5) : 0;
+    const sy0 = revealOn ? (Render.revealSy0 || height * 0.5) : 0;
+    const sx1 = revealOn ? (Render.revealSx1 || width * 0.5) : 0;
+    const sy1 = revealOn ? (Render.revealSy1 || height * 0.5) : 0;
+    const sx2 = revealOn ? (Render.revealSx2 || width * 0.5) : 0;
+    const sy2 = revealOn ? (Render.revealSy2 || height * 0.5) : 0;
+    const minDim = max(1, min(width, height));
+    // Reveal scaling: keep this smaller than the screen size so "100%" really means fully revealed,
+    // even when the shape is centered and far from corners.
+    const revealScale = minDim * 0.26;
+    const _smoothstep = (a, b, x) => {
+      const t = constrain((x - a) / max(1e-9, b - a), 0, 1);
+      return t * t * (3 - 2 * t);
+    };
+    const _revealOK = (i, x, y) => {
+      if (!revealOn) return true;
+      // Organic "stain" growth: distance to the nearest seed + low-frequency noise.
+      const dx0 = x - sx0, dy0 = y - sy0;
+      const dx1 = x - sx1, dy1 = y - sy1;
+      const dx2 = x - sx2, dy2 = y - sy2;
+      let d = sqrt(dx0 * dx0 + dy0 * dy0);
+      d = min(d, sqrt(dx1 * dx1 + dy1 * dy1));
+      d = min(d, sqrt(dx2 * dx2 + dy2 * dy2));
+      const dn = constrain(d / max(1, revealScale), 0, 1);
+      const n = noise(x * revealFreq, y * revealFreq, revealSeed);
+      const v = dn * 0.78 + n * 0.22;
+
+      // Soft boundary via deterministic dithering in a small band around the threshold.
+      const edge = 0.07;
+      const a = 1 - _smoothstep(revealP - edge, revealP + edge, v); // 0..1
+      if (a <= 0.001) return false;
+      if (a >= 0.999) return true;
+      const rs = ((revealSeed * 1000) | 0) >>> 0;
+      const r = hash01((((i + 1) * 2654435761) ^ (rs * 2246822519)) >>> 0);
+      return r < a;
+    };
 
     const sizeScale = (typeof cellW === "number" && typeof CELL_SIZE === "number" && CELL_SIZE > 0)
       ? (cellW / CELL_SIZE)
@@ -747,6 +798,8 @@
       stroke(255, 255, 255, LIGHT_ALPHA * aScene);
       for (let i = 0; i < N; i++) {
         const x = this.x[i], y = this.y[i];
+        if (clipOn && x > clipX) continue;
+        if (!_revealOK(i, x, y)) continue;
         const px = hx(x * c + y * s);
         const py = hx(-x * s + y * c);
         line(px, py, px + eps, py);
@@ -757,6 +810,8 @@
       stroke(255, 255, 255, (LIGHT_ALPHA * 0.28) * aScene);
       for (let i = 0; i < N; i++) if (this.slotU[i] > 0.58) {
         const x = this.x[i], y = this.y[i];
+        if (clipOn && x > clipX) continue;
+        if (!_revealOK(i, x, y)) continue;
         const px = hx(x * c + y * s);
         const py = hx(-x * s + y * c);
         line(px, py, px + eps, py);
@@ -767,6 +822,8 @@
       stroke(255, 255, 255, (LIGHT_ALPHA * 0.62) * aScene);
       for (let i = 0; i < N; i++) if (this.slotU[i] > 0.22 && this.slotU[i] <= 0.58) {
         const x = this.x[i], y = this.y[i];
+        if (clipOn && x > clipX) continue;
+        if (!_revealOK(i, x, y)) continue;
         const px = hx(x * c + y * s);
         const py = hx(-x * s + y * c);
         line(px, py, px + eps, py);
@@ -777,6 +834,8 @@
       stroke(255, 255, 255, min(255, (LIGHT_ALPHA * 1.05) * aScene));
       for (let i = 0; i < N; i++) if (this.slotU[i] <= 0.22) {
         const x = this.x[i], y = this.y[i];
+        if (clipOn && x > clipX) continue;
+        if (!_revealOK(i, x, y)) continue;
         const px = hx(x * c + y * s);
         const py = hx(-x * s + y * c);
         line(px, py, px + eps, py);
@@ -803,6 +862,8 @@
         const d2 = dx * dx + dy * dy;
         if (d2 <= outer2) {
           const x = this.x[i], y = this.y[i];
+          if (clipOn && x > clipX) continue;
+          if (!_revealOK(i, x, y)) continue;
           const px = hx(x * c + y * s);
           const py = hx(-x * s + y * c);
           line(px, py, px + eps, py);
@@ -833,6 +894,8 @@
           const edge = stainR * denK * (0.82 + 0.30 * n);
           if (d2 <= edge * edge) {
             const x = this.x[i], y = this.y[i];
+            if (clipOn && x > clipX) continue;
+            if (!_revealOK(i, x, y)) continue;
             const px = hx(x * c + y * s);
             const py = hx(-x * s + y * c);
             line(px, py, px + eps, py);
