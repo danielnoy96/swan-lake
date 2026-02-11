@@ -19,6 +19,23 @@ let compareSrc0 = 0;
 let compareAlpha = 0.5;
 let _mainCanvasElt = null;
 let _cssTick = 0;
+let _warmupI = 0;
+const WARMUP_ACT1_FRAMES = 24;
+const WARMUP_OTHER_FRAMES = 2;
+const PREFETCH_AHEAD = 12;
+let _prefetchK = 0;
+
+// Startup loading screen: precompute sampler frames so the first run is smooth.
+// Per request: load ALL act frames (counts cache) before allowing the sketch to start.
+let booting = true;
+let _bootActs = [];
+let _bootTotal = 0;
+let _bootActI = 0;
+let _bootIdx = 0;
+let _bootReqTick = 0;
+const BOOT_REQ_PER_FRAME = 6;   // request this many unique frames per draw (I/O), compute remains capped
+const BOOT_SCAN_LIMIT = 600;    // max skips when searching for an unrequested frame
+const BOOT_QUEUE_MAX = 220;     // avoid unbounded queue growth
 function _ensureMainCanvasCss() {
   try {
     if (!_mainCanvasElt) _mainCanvasElt = document.getElementById ? document.getElementById("mainCanvas") : null;
@@ -30,6 +47,94 @@ function _ensureMainCanvasCss() {
     _mainCanvasElt.style.height = "100vh";
     _mainCanvasElt.style.display = "block";
   } catch (_) {}
+}
+function drawLoadingScreen(pct, ready, total) {
+  background(0);
+  fill(255);
+  noStroke();
+  textAlign(CENTER, CENTER);
+  textSize(16);
+  const msg = `Loading… ${Math.round(pct * 100)}%  (${ready}/${total})`;
+  text(msg, width / 2, height / 2);
+  textSize(12);
+  text("Preparing all frames for smooth playback", width / 2, height / 2 + 22);
+  try {
+    const q = Sampler && Sampler.queueLen ? Sampler.queueLen() : 0;
+    const cq = Sampler && Sampler.computeQueueLen ? Sampler.computeQueueLen() : 0;
+    const inf = Sampler && Sampler.inFlight ? Sampler.inFlight : 0;
+    text(`q:${q}  compute:${cq}  inFlight:${inf}`, width / 2, height / 2 + 40);
+  } catch (_) {}
+}
+function _bootInitIfNeeded() {
+  if (_bootActs.length > 0) return;
+  _bootActs = [];
+  _bootTotal = 0;
+  for (let a of ACTS) {
+    const c = SRC_COUNT[a] || 0;
+    if (c > 0) { _bootActs.push(a); _bootTotal += c; }
+  }
+  _bootActI = 0;
+  _bootIdx = 0;
+  _bootReqTick = 0;
+}
+function _bootStepAll() {
+  if (!booting) return true;
+  if (compareMode) { booting = false; return true; }
+  _bootInitIfNeeded();
+  if (_bootActs.length === 0 || _bootTotal <= 0) { booting = false; return true; }
+
+  // Request frames steadily (I/O side). Keep queue bounded.
+  try {
+    const q = Sampler && Sampler.queueLen ? Sampler.queueLen() : 0;
+    const cq = Sampler && Sampler.computeQueueLen ? Sampler.computeQueueLen() : 0;
+    if (q + cq < BOOT_QUEUE_MAX) {
+      let req = 0;
+      let scans = 0;
+      while (req < BOOT_REQ_PER_FRAME && scans < BOOT_SCAN_LIMIT) {
+        const a = _bootActs[_bootActI] | 0;
+        const cycle = SRC_COUNT[a] || 0;
+        if (cycle > 0) {
+          // Skip frames that are already done/loading/failed.
+          const c = Sampler.cache ? Sampler.cache[a] : null;
+          if (!c || c.cycle !== cycle) Sampler.ensureActCache(a, cycle);
+          const cc = Sampler.cache ? Sampler.cache[a] : null;
+          const idx = _bootIdx | 0;
+          const ok = cc && (cc.done[idx] || cc.loading[idx] || cc.failed[idx]);
+          if (!ok) {
+            Sampler.ensure(a, idx, cycle, _prefOff);
+            req++;
+          }
+        }
+        // Advance cursor
+        _bootIdx++;
+        if (_bootIdx >= (cycle || 1)) {
+          _bootIdx = 0;
+          _bootActI++;
+          if (_bootActI >= _bootActs.length) _bootActI = 0;
+        }
+        scans++;
+      }
+    }
+  } catch (_) {}
+
+  // Progress: done or failed counts across all acts.
+  let ready = 0;
+  for (let a of _bootActs) ready += (Sampler.readyOrFailed ? Sampler.readyOrFailed(a) : (Sampler.ready ? Sampler.ready(a) : 0));
+  const pct = _bootTotal > 0 ? ready / _bootTotal : 1;
+
+  const typOK = (typeof Typography !== "undefined" && Typography && Typography.ready);
+  const q = Sampler && Sampler.queueLen ? Sampler.queueLen() : 0;
+  const cq = Sampler && Sampler.computeQueueLen ? Sampler.computeQueueLen() : 0;
+  const inf = Sampler && Sampler.inFlight ? Sampler.inFlight : 0;
+
+  // Consider boot complete only when everything is computed (or failed) and queues are drained.
+  if (ready >= _bootTotal && q === 0 && cq === 0 && inf === 0 && typOK) {
+    booting = false;
+    return true;
+  }
+
+  drawLoadingScreen(pct, ready, _bootTotal);
+  return false;
 }
 function _applyUrlParams() {
   try {
@@ -131,6 +236,8 @@ function windowResized() {
 function draw() {
   // Some hosts/extensions can mutate the canvas element styles; periodically re-assert full-screen CSS.
   if (((_cssTick++) & 31) === 0) _ensureMainCanvasCss();
+  // Cap sampler compute work per frame; during boot allow more so loading finishes sooner.
+  try { if (Sampler && Sampler.stepCompute) Sampler.stepCompute(booting ? 3 : 1); } catch (_) {}
   if (window.__fatalError) {
     background(0);
     fill(255);
@@ -140,6 +247,13 @@ function draw() {
     text(String(window.__fatalError), 12, 12, width - 24, height - 24);
     noLoop();
     return;
+  }
+
+  // Always finish the boot loader first (precompute all frames), even if Auto is toggled.
+  if (booting) {
+    try {
+      if (!_bootStepAll()) return;
+    } catch (_) {}
   }
 
   if (!audioStarted && !autoRun) {
@@ -214,6 +328,21 @@ function draw() {
     } else {
       Acts.update();
     }
+
+    // Streaming prefetch: keep a small window of upcoming frames requested so loads/compute happen
+    // ahead of time (prevents "first loop" hitching when new frames are needed).
+    try {
+      if (Acts.mode === "ACT") {
+        const a = Acts.act;
+        const cycle = SRC_COUNT[a] || 0;
+        if (cycle > 0) {
+          const step = max(1, (FRAME_STEP && FRAME_STEP[a]) | 0);
+          const k = ((_prefetchK++ % PREFETCH_AHEAD) + 2) | 0;
+          const idx = (Acts.src0 + k * step) % cycle;
+          Sampler.ensure(a, idx, cycle, _prefOff);
+        }
+      }
+    } catch (_) {}
     Style.update(Acts, level);
     background(Render.bg);
 
@@ -398,6 +527,8 @@ function drawStartScreen() {
 }
 
 function mousePressed() {
+  // While booting, ignore input (we need the cache ready for smooth playback).
+  if (booting) return;
   // Allow starting the mic even if we previously ran in Auto mode.
   if (autoRun) return;
   if (micRunning) return;

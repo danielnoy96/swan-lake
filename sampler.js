@@ -12,8 +12,11 @@ const Sampler = {
   cache: { 1: null, 2: null, 3: null, 4: null },
   // On-demand loader (avoids preloading hundreds of PNGs -> crashes/reload loops on mobile)
   queue: [],
+  // Loaded images waiting to be converted into counts. Processing is capped per frame to avoid stutter.
+  computeQueue: [],
   inFlight: 0,
   maxInFlight: 3,
+  maxPendingCompute: 2,
   hits: 0, misses: 0, hitsF: 0, missesF: 0,
   init() {
     this.g = createGraphics(this.w, this.h);
@@ -219,6 +222,14 @@ const Sampler = {
     return `assets/act${a}/act${a}_${nf(idx, 5)}.png`;
   },
   queueLen() { return this.queue.length; },
+  computeQueueLen() { return this.computeQueue.length; },
+  readyOrFailed(a) {
+    const c = this.cache[a];
+    if (!c) return 0;
+    let n = 0;
+    for (let i = 0; i < c.done.length; i++) n += (c.done[i] || c.failed[i]) ? 1 : 0;
+    return n;
+  },
   ready(a) {
     const c = this.cache[a];
     if (!c) return 0;
@@ -227,7 +238,11 @@ const Sampler = {
     return n;
   },
   _pump() {
-    while (this.inFlight < this.maxInFlight && this.queue.length > 0) {
+    while (
+      this.inFlight < this.maxInFlight &&
+      this.queue.length > 0 &&
+      this.computeQueue.length < this.maxPendingCompute
+    ) {
       const job = this.queue.shift();
       const a = job.a, idx = job.idx, cycle = job.cycle;
       const c = this.cache[a];
@@ -243,16 +258,10 @@ const Sampler = {
           try {
             const cc = this.cache[a];
             if (!cc || cc.cycle !== cycle) return;
-            const off = idx * CELLS;
-            const seed01 = hash01(((a + 1) * 73856093) ^ ((idx + 1) * 19349663) ^ (cycle * 83492791));
-            const out = cc.counts.subarray(off, off + CELLS);
-            const diag = this._compute(img, out, seed01);
-            // Persist diagnostics for cross-host comparisons.
-            cc.pixHash[idx] = (diag && diag.pixHash ? diag.pixHash : 0) >>> 0;
-            cc.countsHash[idx] = (diag && diag.countsHash ? diag.countsHash : 0) >>> 0;
+            // Defer the expensive `_compute()` to `stepCompute()` so we can cap work per frame.
             cc.imgW[idx] = (img.width | 0) & 0xffff;
             cc.imgH[idx] = (img.height | 0) & 0xffff;
-            cc.done[idx] = 1;
+            this.computeQueue.push({ a, idx, cycle, img });
           } catch (e) {
             try {
               const cc = this.cache[a];
@@ -260,10 +269,6 @@ const Sampler = {
               console.warn("[Sampler] compute failed", a, idx, e);
             } catch (_) {}
           } finally {
-            try {
-              const cc = this.cache[a];
-              if (cc && cc.cycle === cycle) cc.loading[idx] = 0;
-            } catch (_) {}
             this.inFlight--;
             this._pump();
           }
@@ -283,6 +288,39 @@ const Sampler = {
       );
     }
   },
+  // Process a small amount of compute work per frame to avoid startup stutter.
+  stepCompute(maxJobs) {
+    const jobs = maxJobs == null ? 1 : max(0, maxJobs | 0);
+    for (let k = 0; k < jobs; k++) {
+      if (this.computeQueue.length === 0) break;
+      const job = this.computeQueue.shift();
+      const a = job.a, idx = job.idx, cycle = job.cycle, img = job.img;
+      try {
+        const cc = this.cache[a];
+        if (!cc || cc.cycle !== cycle) continue;
+        const off = idx * CELLS;
+        const seed01 = hash01(((a + 1) * 73856093) ^ ((idx + 1) * 19349663) ^ (cycle * 83492791));
+        const out = cc.counts.subarray(off, off + CELLS);
+        const diag = this._compute(img, out, seed01);
+        cc.pixHash[idx] = (diag && diag.pixHash ? diag.pixHash : 0) >>> 0;
+        cc.countsHash[idx] = (diag && diag.countsHash ? diag.countsHash : 0) >>> 0;
+        cc.done[idx] = 1;
+      } catch (e) {
+        try {
+          const cc = this.cache[a];
+          if (cc && cc.cycle === cycle) cc.failed[idx] = 1;
+          console.warn("[Sampler] compute failed", a, idx, e);
+        } catch (_) {}
+      } finally {
+        try {
+          const cc = this.cache[a];
+          if (cc && cc.cycle === cycle) cc.loading[idx] = 0;
+        } catch (_) {}
+      }
+    }
+    // Keep the loader moving if compute queue drained.
+    this._pump();
+  },
   ensure(a, idx, cycle, outOff) {
     this.ensureActCache(a, cycle);
     const c = this.cache[a]; if (!c || idx < 0 || idx >= c.cycle) return false;
@@ -299,6 +337,11 @@ const Sampler = {
     return false;
   },
   counts(a) { return this.cache[a] ? this.cache[a].counts : null; },
+  isDone(a, idx) {
+    const c = this.cache[a];
+    if (!c || idx < 0 || idx >= c.cycle) return false;
+    return !!c.done[idx];
+  },
   framePixHash(a, idx) {
     const c = this.cache[a];
     if (!c || !c.pixHash || idx < 0 || idx >= c.cycle) return 0;
