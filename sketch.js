@@ -38,8 +38,17 @@ function _applyUrlParams() {
 }
 
 function setup() {
-  const cnv = createCanvas(windowWidth, windowHeight);
-  applyPixelDensity();
+  // Use a physical-pixel canvas size so the simulation/rendering look is consistent even when
+  // Chrome uses different devicePixelRatio/zoom per-site (localhost vs GitHub Pages).
+  pixelDensity(1);
+  const cssW = (typeof window !== "undefined" ? (window.innerWidth || windowWidth) : windowWidth) | 0;
+  const cssH = (typeof window !== "undefined" ? (window.innerHeight || windowHeight) : windowHeight) | 0;
+  const dpr = (typeof window !== "undefined" ? (window.devicePixelRatio || 1) : 1) || 1;
+  const physW = max(1, round(cssW * dpr));
+  const physH = max(1, round(cssH * dpr));
+  const cnv = createCanvas(physW, physH);
+  try { cnv?.style?.("width", `${cssW}px`); } catch (_) {}
+  try { cnv?.style?.("height", `${cssH}px`); } catch (_) {}
   applySimSeed();
   _applyUrlParams();
   try { cnv?.style?.("display", "block"); } catch (_) {}
@@ -74,8 +83,18 @@ function setup() {
 }
 
 function windowResized() {
-  resizeCanvas(windowWidth, windowHeight);
-  applyPixelDensity();
+  pixelDensity(1);
+  const cssW = (typeof window !== "undefined" ? (window.innerWidth || windowWidth) : windowWidth) | 0;
+  const cssH = (typeof window !== "undefined" ? (window.innerHeight || windowHeight) : windowHeight) | 0;
+  const dpr = (typeof window !== "undefined" ? (window.devicePixelRatio || 1) : 1) || 1;
+  const physW = max(1, round(cssW * dpr));
+  const physH = max(1, round(cssH * dpr));
+  resizeCanvas(physW, physH);
+  try {
+    // Keep the canvas visually full-screen in CSS pixels (prevents "everything looks bigger" artifacts).
+    const c = document.querySelector("canvas");
+    if (c) { c.style.width = `${cssW}px`; c.style.height = `${cssH}px`; }
+  } catch (_) {}
   applySimSeed();
   try {
     Style.init();
@@ -432,7 +451,10 @@ function keyPressed() {
       href: (typeof location !== "undefined" ? location.href : ""),
       dpr: +dpr.toFixed(3),
       zoom: +z.toFixed(3),
+      // Canvas logical coords are in physical pixels (we size the canvas to innerWidth*dpr and set pixelDensity(1)).
       w: width, h: height,
+      cssW: (typeof window !== "undefined" ? (window.innerWidth || 0) : 0),
+      cssH: (typeof window !== "undefined" ? (window.innerHeight || 0) : 0),
       // Actual backing-store size (what the canvas really renders at in pixels)
       bufW: Math.round(width * pd),
       bufH: Math.round(height * pd),
@@ -492,6 +514,8 @@ function drawDebug(level, desiredSum, moved, mismatch) {
   const z = (typeof pageZoom === "number" ? pageZoom : 1) || 1;
   const bufW = round(width * pd);
   const bufH = round(height * pd);
+  const cssW = (typeof window !== "undefined" ? (window.innerWidth || 0) : 0);
+  const cssH = (typeof window !== "undefined" ? (window.innerHeight || 0) : 0);
   let pix0 = 0, pix1 = 0, ch0 = 0, ch1 = 0;
   try {
     if (Sampler && typeof Sampler.framePixHash === "function") {
@@ -515,7 +539,7 @@ function drawDebug(level, desiredSum, moved, mismatch) {
   const step = max(1, (FRAME_STEP && FRAME_STEP[Acts.act]) | 0);
   const framesPerCycle = Acts.cycle > 0 ? ceil(Acts.cycle / step) : 0;
   text(`cycle:${Acts.cycle} SRC:${SRC_COUNT[Acts.act] || 0} step:${step} fCycle:${framesPerCycle} ready:${ready}  src0/src1:${Acts.src0}/${Acts.src1} a:${Acts.alpha.toFixed(2)} cycles:${Acts.cycles}`, 18, 32);
-  text(`grid:${COLS}x${ROWS} cell:${cellW.toFixed(2)} zoom:${z.toFixed(2)} dpr:${dpr.toFixed(2)} pd:${pd.toFixed(2)} buf:${bufW}x${bufH} desiredSum:${desiredSum} moved:${moved} mismatch:${mismatch} meanDist:${debugMeanCellDist.toFixed(1)} catchUp:${catchUp.toFixed(2)} hot:${_hotCount} lane:${debugTransport}  cache(h/m):${Sampler.hitsF}/${Sampler.missesF} total:${Sampler.hits}/${Sampler.misses} inFlight:${Sampler.inFlight || 0} q:${q} level:${level.toFixed(3)}  ${typ}`, 18, 48);
+  text(`grid:${COLS}x${ROWS} cell:${cellW.toFixed(2)} zoom:${z.toFixed(2)} dpr:${dpr.toFixed(2)} pd:${pd.toFixed(2)} css:${cssW}x${cssH} buf:${bufW}x${bufH} desiredSum:${desiredSum} moved:${moved} mismatch:${mismatch} meanDist:${debugMeanCellDist.toFixed(1)} catchUp:${catchUp.toFixed(2)} hot:${_hotCount} lane:${debugTransport}  cache(h/m):${Sampler.hitsF}/${Sampler.missesF} total:${Sampler.hits}/${Sampler.misses} inFlight:${Sampler.inFlight || 0} q:${q} level:${level.toFixed(3)}  ${typ}`, 18, 48);
   text(`imagesDrawnToCanvas:${imagesDrawnToCanvas}`, 18, 64);
   if (pix0 || pix1 || ch0 || ch1) {
     text(`pixHash0/1:${pix0}/${pix1}  countsHash0/1:${ch0}/${ch1}`, 18, 96);
