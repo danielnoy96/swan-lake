@@ -724,7 +724,9 @@
       ? (cellW / CELL_SIZE)
       : 1;
     // Quantize size + positions to reduce host-dependent anti-aliasing differences (localhost vs Pages).
-    const swBase = max(1.0, round(PARTICLE_SIZE * sizeScale));
+    // Prefer even stroke widths (odd widths land on half-pixels and can look like rotated diamonds).
+    let swBase = max(1.0, round(PARTICLE_SIZE * sizeScale));
+    if ((swBase & 1) && swBase > 1) swBase--;
 
     if (!stageA) {
       strokeWeight(swBase);
@@ -732,7 +734,9 @@
       for (let i = 0; i < N; i++) point(((this.x[i] + 0.5) | 0), ((this.y[i] + 0.5) | 0));
     } else {
       // Tail (faded)
-      strokeWeight(max(1.0, round(swBase - 0.2 * sizeScale)));
+      let swT = max(1.0, round(swBase - 0.2 * sizeScale));
+      if ((swT & 1) && swT > 1) swT--;
+      strokeWeight(swT);
       stroke(255, 255, 255, (LIGHT_ALPHA * 0.28) * aScene);
       for (let i = 0; i < N; i++) if (this.slotU[i] > 0.58) point(((this.x[i] + 0.5) | 0), ((this.y[i] + 0.5) | 0));
 
@@ -742,7 +746,9 @@
       for (let i = 0; i < N; i++) if (this.slotU[i] > 0.22 && this.slotU[i] <= 0.58) point(((this.x[i] + 0.5) | 0), ((this.y[i] + 0.5) | 0));
 
       // Head (more saturated)
-      strokeWeight(max(1.0, round(swBase + 1.2 * sizeScale)));
+      let swH = max(1.0, round(swBase + 1.2 * sizeScale));
+      if ((swH & 1) && swH > 1) swH--;
+      strokeWeight(swH);
       stroke(255, 255, 255, min(255, (LIGHT_ALPHA * 1.05) * aScene));
       for (let i = 0; i < N; i++) if (this.slotU[i] <= 0.22) point(((this.x[i] + 0.5) | 0), ((this.y[i] + 0.5) | 0));
     }

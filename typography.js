@@ -169,6 +169,12 @@ const Typography = {
       if (ctx) {
         g.drawingContext = ctx;
         if (g._renderer) g._renderer.drawingContext = ctx;
+        try {
+          ctx.imageSmoothingEnabled = false;
+          if (ctx.setTransform) ctx.setTransform(1, 0, 0, 1, 0, 0);
+          ctx.globalCompositeOperation = "source-over";
+          ctx.globalAlpha = 1;
+        } catch (_) {}
       }
     } catch (_) {}
     g.clear();
@@ -179,6 +185,15 @@ const Typography = {
       // FIT into buffer (preserve aspect)
       const r = { x: 0, y: 0, w: 0, h: 0 };
       fitRect(img.width, img.height, W, H, r);
+      // Quantize to avoid subpixel differences between hosts/GPUs.
+      r.x = round(r.x);
+      r.y = round(r.y);
+      r.w = max(1, round(r.w));
+      r.h = max(1, round(r.h));
+      if (r.x < 0) r.x = 0;
+      if (r.y < 0) r.y = 0;
+      if (r.x + r.w > W) r.w = max(1, W - r.x);
+      if (r.y + r.h > H) r.h = max(1, H - r.y);
       g.image(img, r.x, r.y, r.w, r.h);
     }
     g.loadPixels();
@@ -483,7 +498,14 @@ const Typography = {
     strokeCap(ROUND);
 
     // Base pass for readability (anchored).
-    strokeWeight(this.BIG_SIZE);
+    const sizeScale = (typeof cellW === "number" && typeof CELL_SIZE === "number" && CELL_SIZE > 0)
+      ? (cellW / CELL_SIZE)
+      : 1;
+    let swBig = max(1.0, round(this.BIG_SIZE * sizeScale));
+    if ((swBig & 1) && swBig > 1) swBig--;
+    let swSmall = max(1.0, round(this.SMALL_SIZE * sizeScale));
+    if ((swSmall & 1) && swSmall > 1) swSmall--;
+    strokeWeight(swBig);
     const bigN = min(this.n, this.BIG_N | 0);
     // Batch big anchors by kind to reduce state changes (same visual output).
     stroke(255, 255, 255, aBaseDim);
@@ -493,7 +515,7 @@ const Typography = {
       const idx = packed & 0xffffff;
       const tpl = this._big;
       if (idx >= tpl.n) continue;
-      point(this.bigRect.x + tpl.cX[idx] * this.bigRect.w, this.bigRect.y + tpl.cY[idx] * this.bigRect.h);
+      point(((this.bigRect.x + tpl.cX[idx] * this.bigRect.w + 0.5) | 0), ((this.bigRect.y + tpl.cY[idx] * this.bigRect.h + 0.5) | 0));
     }
     stroke(255, 255, 255, aBaseHi);
     for (let i = 0; i < bigN; i++) {
@@ -502,10 +524,10 @@ const Typography = {
       const idx = packed & 0xffffff;
       const tpl = this._big;
       if (idx >= tpl.n) continue;
-      point(this.bigRect.x + tpl.cX[idx] * this.bigRect.w, this.bigRect.y + tpl.cY[idx] * this.bigRect.h);
+      point(((this.bigRect.x + tpl.cX[idx] * this.bigRect.w + 0.5) | 0), ((this.bigRect.y + tpl.cY[idx] * this.bigRect.h + 0.5) | 0));
     }
 
-    strokeWeight(this.SMALL_SIZE);
+    strokeWeight(swSmall);
     const smallStart = bigN;
     for (let i = smallStart; i < this.n; i++) {
       const packed = this.anchor[i] >>> 0;
@@ -518,12 +540,14 @@ const Typography = {
       stroke(255, 255, 255, (this.kind[i] ? aBaseHi : aBaseDim) * tw);
       const ax = this.smallRect.x + tpl.cX[idx] * this.smallRect.w;
       const ay = this.smallRect.y + tpl.cY[idx] * this.smallRect.h;
-      point(ax, ay);
-      if ((i & 1) === 0) point(ax + this._stampOx[i], ay + this._stampOy[i]);
+      point(((ax + 0.5) | 0), ((ay + 0.5) | 0));
+      if ((i & 1) === 0) point((((ax + this._stampOx[i]) + 0.5) | 0), (((ay + this._stampOy[i]) + 0.5) | 0));
     }
 
     // Moving texture for big letters only (half-rate for perf).
-    strokeWeight(max(1.2, this.BIG_SIZE * 0.72));
+    let swMove = max(1.0, round(max(1.2, this.BIG_SIZE * 0.72) * sizeScale));
+    if ((swMove & 1) && swMove > 1) swMove--;
+    strokeWeight(swMove);
     for (let i = 0; i < this.n; i++) {
       const packed = this.anchor[i] >>> 0;
       const gid = (packed >>> 24) & 0xff;
@@ -531,7 +555,7 @@ const Typography = {
       if ((i & 1) === 1) continue;
       const tw = 0.5 + 0.5 * sin(t * 0.12 + this.seed[i]);
       stroke(255, 255, 255, (this.kind[i] ? aMoveHi : aMoveDim) * (0.75 + 0.25 * tw));
-      point(this.bigRect.x + this.x[i] * this.bigRect.w, this.bigRect.y + this.y[i] * this.bigRect.h);
+      point(((this.bigRect.x + this.x[i] * this.bigRect.w + 0.5) | 0), ((this.bigRect.y + this.y[i] * this.bigRect.h + 0.5) | 0));
     }
 
     blendMode(BLEND);
