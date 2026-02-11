@@ -18,6 +18,19 @@ let compareAct = 1;
 let compareSrc0 = 0;
 let compareAlpha = 0.5;
 let _mainCanvasElt = null;
+let _cssTick = 0;
+function _ensureMainCanvasCss() {
+  try {
+    if (!_mainCanvasElt) _mainCanvasElt = document.getElementById ? document.getElementById("mainCanvas") : null;
+    if (!_mainCanvasElt) return;
+    _mainCanvasElt.style.position = "fixed";
+    _mainCanvasElt.style.left = "0";
+    _mainCanvasElt.style.top = "0";
+    _mainCanvasElt.style.width = "100vw";
+    _mainCanvasElt.style.height = "100vh";
+    _mainCanvasElt.style.display = "block";
+  } catch (_) {}
+}
 function _applyUrlParams() {
   try {
     if (typeof location === "undefined") return;
@@ -53,12 +66,7 @@ function setup() {
   try {
     if (_mainCanvasElt) {
       _mainCanvasElt.id = "mainCanvas";
-      _mainCanvasElt.style.position = "fixed";
-      _mainCanvasElt.style.left = "0";
-      _mainCanvasElt.style.top = "0";
-      _mainCanvasElt.style.width = "100vw";
-      _mainCanvasElt.style.height = "100vh";
-      _mainCanvasElt.style.display = "block";
+      _ensureMainCanvasCss();
     }
   } catch (_) {}
   applySimSeed();
@@ -105,14 +113,7 @@ function windowResized() {
   try {
     // Keep the main canvas visually full-screen in CSS pixels (robust even if other canvases exist).
     if (!_mainCanvasElt) _mainCanvasElt = document.getElementById ? document.getElementById("mainCanvas") : null;
-    if (_mainCanvasElt) {
-      _mainCanvasElt.style.position = "fixed";
-      _mainCanvasElt.style.left = "0";
-      _mainCanvasElt.style.top = "0";
-      _mainCanvasElt.style.width = "100vw";
-      _mainCanvasElt.style.height = "100vh";
-      _mainCanvasElt.style.display = "block";
-    }
+    _ensureMainCanvasCss();
   } catch (_) {}
   applySimSeed();
   try {
@@ -128,6 +129,8 @@ function windowResized() {
 }
 
 function draw() {
+  // Some hosts/extensions can mutate the canvas element styles; periodically re-assert full-screen CSS.
+  if (((_cssTick++) & 31) === 0) _ensureMainCanvasCss();
   if (window.__fatalError) {
     background(0);
     fill(255);

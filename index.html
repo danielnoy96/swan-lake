@@ -14,17 +14,19 @@
   <style>
     html, body { margin: 0; padding: 0; overflow: hidden; background: black; }
     #mainCanvas { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
+    /* Safety: if any extra canvases are accidentally inserted into the DOM, hide them. */
+    canvas:not(#mainCanvas) { display: none !important; }
   </style>
 </head>
 <body>
   <!-- Cache-bust for GitHub Pages (prevents stale JS after updates). Bump the v= value when you deploy. -->
-  <script src="core.js?v=20260211-11"></script>
-  <script src="style.js?v=20260211-11"></script>
-  <script src="sampler.js?v=20260211-11"></script>
-  <script src="particles.js?v=20260211-11"></script>
-  <script src="redistribute.js?v=20260211-11"></script>
-  <script src="acts.js?v=20260211-11"></script>
-  <script src="typography.js?v=20260211-11"></script>
-  <script src="sketch.js?v=20260211-11"></script>
+  <script src="core.js?v=20260211-12"></script>
+  <script src="style.js?v=20260211-12"></script>
+  <script src="sampler.js?v=20260211-12"></script>
+  <script src="particles.js?v=20260211-12"></script>
+  <script src="redistribute.js?v=20260211-12"></script>
+  <script src="acts.js?v=20260211-12"></script>
+  <script src="typography.js?v=20260211-12"></script>
+  <script src="sketch.js?v=20260211-12"></script>
 </body>
 </html>
