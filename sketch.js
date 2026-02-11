@@ -48,11 +48,19 @@ function setup() {
   const physW = max(1, round(cssW * dpr));
   const physH = max(1, round(cssH * dpr));
   const cnv = createCanvas(physW, physH);
-  try { cnv?.id?.("mainCanvas"); } catch (_) {}
   try { _mainCanvasElt = cnv?.elt || null; } catch (_) {}
-  // CSS sizing is handled via #mainCanvas rules in index.html; keep this as a fallback.
-  try { cnv?.style?.("width", "100vw"); } catch (_) {}
-  try { cnv?.style?.("height", "100vh"); } catch (_) {}
+  // Hard-set DOM id + CSS sizing here (more reliable than relying on p5.Element helpers across builds/hosts).
+  try {
+    if (_mainCanvasElt) {
+      _mainCanvasElt.id = "mainCanvas";
+      _mainCanvasElt.style.position = "fixed";
+      _mainCanvasElt.style.left = "0";
+      _mainCanvasElt.style.top = "0";
+      _mainCanvasElt.style.width = "100vw";
+      _mainCanvasElt.style.height = "100vh";
+      _mainCanvasElt.style.display = "block";
+    }
+  } catch (_) {}
   applySimSeed();
   _applyUrlParams();
   try { cnv?.style?.("display", "block"); } catch (_) {}
@@ -96,7 +104,15 @@ function windowResized() {
   resizeCanvas(physW, physH);
   try {
     // Keep the main canvas visually full-screen in CSS pixels (robust even if other canvases exist).
-    if (_mainCanvasElt) { _mainCanvasElt.style.width = "100vw"; _mainCanvasElt.style.height = "100vh"; }
+    if (!_mainCanvasElt) _mainCanvasElt = document.getElementById ? document.getElementById("mainCanvas") : null;
+    if (_mainCanvasElt) {
+      _mainCanvasElt.style.position = "fixed";
+      _mainCanvasElt.style.left = "0";
+      _mainCanvasElt.style.top = "0";
+      _mainCanvasElt.style.width = "100vw";
+      _mainCanvasElt.style.height = "100vh";
+      _mainCanvasElt.style.display = "block";
+    }
   } catch (_) {}
   applySimSeed();
   try {
