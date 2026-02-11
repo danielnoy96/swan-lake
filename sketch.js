@@ -13,10 +13,15 @@ const _prefOff = { off: 0 };
 let _debugDtSec = 0;
 let _debugRate = 0;
 let _soundOK = false;
+let compareMode = false;
+let compareAct = 1;
+let compareSrc0 = 0;
+let compareAlpha = 0.5;
 
 function setup() {
   const cnv = createCanvas(windowWidth, windowHeight);
   applyPixelDensity();
+  applySimSeed();
   try { cnv?.style?.("display", "block"); } catch (_) {}
   try {
     _soundOK = (typeof p5 !== "undefined" && typeof p5.AudioIn === "function" && typeof p5.Amplitude === "function");
@@ -51,6 +56,7 @@ function setup() {
 function windowResized() {
   resizeCanvas(windowWidth, windowHeight);
   applyPixelDensity();
+  applySimSeed();
   try {
     Style.init();
     updatePageZoom();
@@ -91,10 +97,10 @@ function draw() {
   const dtSec = constrain((typeof deltaTime === "number" ? deltaTime : 16.7) / 1000, 0, 0.10);
   _debugDtSec = dtSec;
 
-  if (autoRun) {
+  if (!compareMode && autoRun) {
     t += AUTO_SPEED * dtSec;
     _debugRate = AUTO_SPEED;
-  } else if (micRunning && level > MIC_THRESHOLD) {
+  } else if (!compareMode && micRunning && level > MIC_THRESHOLD) {
     // Mic speed in sound-seconds per real second.
     // Quickly reaches 1.0 so "always loud" finishes a full loop in ~60s like Auto.
     const rate = map(level, MIC_THRESHOLD, MIC_THRESHOLD + 0.02, 0.35, 1.0, true);
@@ -107,6 +113,11 @@ function draw() {
   tDelta = t - _prevT;
   tAdvanced = tDelta !== 0;
   _prevT = t;
+  if (compareMode) {
+    // Drive motion even while time is frozen for deterministic cross-host comparisons.
+    tAdvanced = true;
+    tDelta = 0.016;
+  }
 
   // Fade scene visibility based on mic level (objects/text appear only with noise).
   // NOT tied to `t`, so it can fade out when `t` is frozen.
@@ -122,7 +133,27 @@ function draw() {
 
   try {
     Sampler.resetFrameStats();
-    Acts.update();
+    if (compareMode) {
+      Acts.mode = "ACT";
+      Acts.act = constrain(compareAct | 0, 1, 4);
+      Acts.next = nextActWithFrames(Acts.act);
+      Acts.cycle = SRC_COUNT[Acts.act] || 0;
+      Acts.fps = FPS_EFFECTIVE[Acts.act] || 24;
+      Acts.elapsed = 0;
+      Acts.dur = Acts.cycle > 0 && Acts.fps > 0 ? Acts.cycle / Acts.fps : 0;
+      if (Acts.cycle > 0) {
+        Acts.src0 = ((compareSrc0 | 0) % Acts.cycle + Acts.cycle) % Acts.cycle;
+        Acts.src1 = (Acts.src0 + 1) % Acts.cycle;
+        Acts.alpha = constrain(compareAlpha, 0, 1);
+        Acts.cycles = 0;
+      } else {
+        Acts.src0 = Acts.src1 = 0;
+        Acts.alpha = 0;
+        Acts.cycles = 0;
+      }
+    } else {
+      Acts.update();
+    }
     Style.update(Acts, level);
     background(Render.bg);
 
@@ -335,6 +366,20 @@ function keyPressed() {
       if (!micRunning) audioStarted = false;
     }
   }
+  if (key === "c" || key === "C") {
+    compareMode = !compareMode;
+    audioStarted = true;
+  }
+  if (compareMode) {
+    if (key === "1") compareAct = 1;
+    if (key === "2") compareAct = 2;
+    if (key === "3") compareAct = 3;
+    if (key === "4") compareAct = 4;
+    if (keyCode === LEFT_ARROW) compareSrc0 -= (keyIsDown(SHIFT) ? 10 : 1);
+    if (keyCode === RIGHT_ARROW) compareSrc0 += (keyIsDown(SHIFT) ? 10 : 1);
+    if (keyCode === UP_ARROW) compareAlpha = constrain(compareAlpha + (keyIsDown(SHIFT) ? 0.10 : 0.02), 0, 1);
+    if (keyCode === DOWN_ARROW) compareAlpha = constrain(compareAlpha - (keyIsDown(SHIFT) ? 0.10 : 0.02), 0, 1);
+  }
   if (key === "p" || key === "P") {
     const dpr = (typeof window !== "undefined" ? (window.devicePixelRatio || 1) : 1) || 1;
     const z = (typeof pageZoom === "number" ? pageZoom : 1) || 1;
@@ -352,6 +397,7 @@ function keyPressed() {
       soundOK: !!_soundOK,
       micRunning: !!micRunning,
       autoRun: !!autoRun,
+      compareMode: !!compareMode,
       mode: Acts.mode,
       act: Acts.act,
       src0: Acts.src0,
@@ -402,5 +448,8 @@ function drawDebug(level, desiredSum, moved, mismatch) {
   text(`cycle:${Acts.cycle} SRC:${SRC_COUNT[Acts.act] || 0} step:${step} fCycle:${framesPerCycle} ready:${ready}  src0/src1:${Acts.src0}/${Acts.src1} a:${Acts.alpha.toFixed(2)} cycles:${Acts.cycles}`, 18, 32);
   text(`grid:${COLS}x${ROWS} cell:${cellW.toFixed(2)} zoom:${z.toFixed(2)} dpr:${dpr.toFixed(2)} pd:${pd.toFixed(2)} buf:${bufW}x${bufH} desiredSum:${desiredSum} moved:${moved} mismatch:${mismatch} meanDist:${debugMeanCellDist.toFixed(1)} catchUp:${catchUp.toFixed(2)} hot:${_hotCount} lane:${debugTransport}  cache(h/m):${Sampler.hitsF}/${Sampler.missesF} total:${Sampler.hits}/${Sampler.misses} inFlight:${Sampler.inFlight || 0} q:${q} level:${level.toFixed(3)}  ${typ}`, 18, 48);
   text(`imagesDrawnToCanvas:${imagesDrawnToCanvas}`, 18, 64);
+  if (compareMode) {
+    text(`COMPARE: act=${compareAct} src0=${compareSrc0} alpha=${compareAlpha.toFixed(2)}  (1-4 act, ←/→ src, ↑/↓ alpha, C toggle)`, 18, 80);
+  }
   pop();
 }
