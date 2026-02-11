@@ -157,10 +157,13 @@ let gridX0 = 0, gridY0 = 0;
 let cellW = 1, cellH = 1, invCellW = 1, invCellH = 1;
 
 function resizeGrid() {
-  const z = max(0.5, (typeof pageZoom === "number" ? pageZoom : 1) || 1);
-  // Compensate for per-site zoom so the grid resolution stays consistent.
-  cellW = CELL_SIZE / z;
-  cellH = CELL_SIZE / z;
+  const dpr = max(1, (typeof window !== "undefined" ? (window.devicePixelRatio || 1) : 1));
+  // IMPORTANT: Use *physical* pixel scaling for the simulation grid.
+  // On the same device/browser, different hosts can end up with different CSS pixel scaling
+  // (e.g., GitHub Pages vs localhost), which changes `windowWidth/windowHeight` and the grid.
+  // Using `CELL_SIZE / devicePixelRatio` keeps the grid stable in physical pixels.
+  cellW = CELL_SIZE / dpr;
+  cellH = CELL_SIZE / dpr;
   COLS = max(1, floor(width / cellW));
   ROWS = max(1, floor(height / cellH));
   CELLS = COLS * ROWS;

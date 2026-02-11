@@ -317,6 +317,30 @@ function keyPressed() {
       if (!micRunning) audioStarted = false;
     }
   }
+  if (key === "p" || key === "P") {
+    const dpr = (typeof window !== "undefined" ? (window.devicePixelRatio || 1) : 1) || 1;
+    const z = (typeof pageZoom === "number" ? pageZoom : 1) || 1;
+    const snap = {
+      href: (typeof location !== "undefined" ? location.href : ""),
+      dpr: +dpr.toFixed(3),
+      zoom: +z.toFixed(3),
+      w: width, h: height,
+      physW: Math.round(width * dpr),
+      physH: Math.round(height * dpr),
+      grid: `${COLS}x${ROWS}`,
+      cell: +cellW.toFixed(3),
+      mode: Acts.mode,
+      act: Acts.act,
+      src0: Acts.src0,
+      src1: Acts.src1,
+      a: +Acts.alpha.toFixed(3),
+      ready: (Sampler.ready ? Sampler.ready(Acts.act) : 0),
+      hits: Sampler.hits, misses: Sampler.misses,
+      inFlight: Sampler.inFlight || 0,
+      q: Sampler.queueLen ? Sampler.queueLen() : 0,
+    };
+    console.log("[SNAP]", snap);
+  }
 }
 
 function drawDebug(level, desiredSum, moved, mismatch) {
@@ -326,6 +350,8 @@ function drawDebug(level, desiredSum, moved, mismatch) {
   const dpr = (typeof window !== "undefined" ? (window.devicePixelRatio || 1) : 1);
   const pd = (typeof pixelDensity === "function" ? pixelDensity() : 1) || 1;
   const z = (typeof pageZoom === "number" ? pageZoom : 1) || 1;
+  const physW = round(width * dpr);
+  const physH = round(height * dpr);
 
   push();
   noStroke();
@@ -338,7 +364,7 @@ function drawDebug(level, desiredSum, moved, mismatch) {
   const step = max(1, (FRAME_STEP && FRAME_STEP[Acts.act]) | 0);
   const framesPerCycle = Acts.cycle > 0 ? ceil(Acts.cycle / step) : 0;
   text(`cycle:${Acts.cycle} SRC:${SRC_COUNT[Acts.act] || 0} step:${step} fCycle:${framesPerCycle} ready:${ready}  src0/src1:${Acts.src0}/${Acts.src1} a:${Acts.alpha.toFixed(2)} cycles:${Acts.cycles}`, 18, 32);
-  text(`grid:${COLS}x${ROWS} cell:${cellW.toFixed(2)} zoom:${z.toFixed(2)} dpr:${dpr.toFixed(2)} pd:${pd.toFixed(2)} desiredSum:${desiredSum} moved:${moved} mismatch:${mismatch} meanDist:${debugMeanCellDist.toFixed(1)} catchUp:${catchUp.toFixed(2)} hot:${_hotCount} lane:${debugTransport}  cache(h/m):${Sampler.hitsF}/${Sampler.missesF} total:${Sampler.hits}/${Sampler.misses} inFlight:${Sampler.inFlight || 0} q:${q} level:${level.toFixed(3)}  ${typ}`, 18, 48);
+  text(`grid:${COLS}x${ROWS} cell:${cellW.toFixed(2)} zoom:${z.toFixed(2)} dpr:${dpr.toFixed(2)} pd:${pd.toFixed(2)} phys:${physW}x${physH} desiredSum:${desiredSum} moved:${moved} mismatch:${mismatch} meanDist:${debugMeanCellDist.toFixed(1)} catchUp:${catchUp.toFixed(2)} hot:${_hotCount} lane:${debugTransport}  cache(h/m):${Sampler.hitsF}/${Sampler.missesF} total:${Sampler.hits}/${Sampler.misses} inFlight:${Sampler.inFlight || 0} q:${q} level:${level.toFixed(3)}  ${typ}`, 18, 48);
   text(`imagesDrawnToCanvas:${imagesDrawnToCanvas}`, 18, 64);
   pop();
 }
