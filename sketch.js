@@ -12,14 +12,23 @@ let _actDesiredFor = 0;
 const _prefOff = { off: 0 };
 let _debugDtSec = 0;
 let _debugRate = 0;
+let _soundOK = false;
 
 function setup() {
   const cnv = createCanvas(windowWidth, windowHeight);
   applyPixelDensity();
   try { cnv?.style?.("display", "block"); } catch (_) {}
   try {
-    mic = new p5.AudioIn();
-    amp = new p5.Amplitude();
+    _soundOK = (typeof p5 !== "undefined" && typeof p5.AudioIn === "function" && typeof p5.Amplitude === "function");
+    if (_soundOK) {
+      mic = new p5.AudioIn();
+      amp = new p5.Amplitude();
+    } else {
+      // Fallback: allow Auto mode + visuals even if p5.sound failed to load on the host.
+      mic = { start: () => {}, stop: () => {} };
+      amp = { getLevel: () => 0, setInput: () => {} };
+      console.warn("[Audio] p5.sound not available; microphone disabled. Press 'A' for auto.");
+    }
 
     Style.init();
     updatePageZoom();
@@ -290,14 +299,23 @@ function drawStartScreen() {
   noStroke();
   textAlign(CENTER, CENTER);
   textSize(18);
-  text("Tap to activate microphone\nSound drives the animation", width / 2, height / 2);
+  if (_soundOK) {
+    text("Tap to activate microphone\nSound drives the animation", width / 2, height / 2);
+  } else {
+    text("Audio unavailable (p5.sound failed to load)\nPress 'A' for Auto mode", width / 2, height / 2);
+  }
 }
 
 function mousePressed() {
   // Allow starting the mic even if we previously ran in Auto mode.
   if (autoRun) return;
   if (micRunning) return;
-  userStartAudio();
+  if (!_soundOK || !mic || typeof mic.start !== "function") {
+    // Don't crash on hosts where p5.sound didn't load; keep the sketch running.
+    console.warn("[Audio] Mic start requested but p5.sound/mic is unavailable. Press 'A' for auto.");
+    return;
+  }
+  if (typeof userStartAudio === "function") userStartAudio();
   mic.start(() => {
     amp.setInput(mic);
     audioStarted = true;
@@ -331,6 +349,9 @@ function keyPressed() {
       bufH: Math.round(height * pd),
       grid: `${COLS}x${ROWS}`,
       cell: +cellW.toFixed(3),
+      soundOK: !!_soundOK,
+      micRunning: !!micRunning,
+      autoRun: !!autoRun,
       mode: Acts.mode,
       act: Acts.act,
       src0: Acts.src0,
