@@ -719,26 +719,24 @@
       ? constrain((t - Acts.transitionStartT) / max(1e-6, TRANSITION_DURATION), 0, 1)
       : 1;
     const stageA = Acts && Acts.mode === "TRANSITION" && p < DANCE_PORTION;
-    const dpr = (typeof window !== "undefined" ? (window.devicePixelRatio || 1) : 1) || 1;
-    const px = 1 / max(1, dpr); // keep particle size stable in physical pixels across hosts/zoom
 
     if (!stageA) {
-      strokeWeight(max(0.6, PARTICLE_SIZE * px));
+      strokeWeight(PARTICLE_SIZE);
       stroke(255, 255, 255, LIGHT_ALPHA * aScene);
       for (let i = 0; i < N; i++) point(this.x[i], this.y[i]);
     } else {
       // Tail (faded)
-      strokeWeight(max(0.6, max(1.0, PARTICLE_SIZE - 0.2) * px));
+      strokeWeight(max(1.0, PARTICLE_SIZE - 0.2));
       stroke(255, 255, 255, (LIGHT_ALPHA * 0.28) * aScene);
       for (let i = 0; i < N; i++) if (this.slotU[i] > 0.58) point(this.x[i], this.y[i]);
 
       // Mid
-      strokeWeight(max(0.6, PARTICLE_SIZE * px));
+      strokeWeight(PARTICLE_SIZE);
       stroke(255, 255, 255, (LIGHT_ALPHA * 0.62) * aScene);
       for (let i = 0; i < N; i++) if (this.slotU[i] > 0.22 && this.slotU[i] <= 0.58) point(this.x[i], this.y[i]);
 
       // Head (more saturated)
-      strokeWeight(max(0.6, (PARTICLE_SIZE + 1.2) * px));
+      strokeWeight(PARTICLE_SIZE + 1.2);
       stroke(255, 255, 255, min(255, (LIGHT_ALPHA * 1.05) * aScene));
       for (let i = 0; i < N; i++) if (this.slotU[i] <= 0.22) point(this.x[i], this.y[i]);
     }

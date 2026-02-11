@@ -84,6 +84,16 @@ const TRANSITION_DURATION = 2.6, DANCE_PORTION = 0.78;
 const MIC_THRESHOLD = 0.03;
 // Auto mode speed in sound-seconds per real second (applied with dt).
 const AUTO_SPEED = 1.0;
+// Match the canvas backing-store to the device scale so particles look the same on different hosts
+// (GitHub Pages can end up with different CSS px scaling than localhost).
+// Cap for mobile performance.
+const PIXEL_DENSITY_CAP = 1.5;
+function applyPixelDensity() {
+  try {
+    const dpr = max(1, (typeof window !== "undefined" ? (window.devicePixelRatio || 1) : 1));
+    pixelDensity(min(PIXEL_DENSITY_CAP, dpr));
+  } catch (_) {}
+}
 // Page zoom compensation:
 // GitHub Pages can end up with a different per-site zoom than localhost (even on the same device/browser),
 // which changes `windowWidth/windowHeight` and therefore the grid resolution + particle look.

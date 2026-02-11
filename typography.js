@@ -472,8 +472,6 @@ const Typography = {
     if (!this._big || !this._small) return;
 
     this.update(level);
-    const dpr = (typeof window !== "undefined" ? (window.devicePixelRatio || 1) : 1) || 1;
-    const px = 1 / max(1, dpr);
     const aScene = typeof sceneA === "number" ? sceneA : 1;
     const aBaseDim = this.BASE_ALPHA * 0.85 * aScene;
     const aBaseHi = this.BASE_ALPHA * 1.25 * aScene;
@@ -485,7 +483,7 @@ const Typography = {
     strokeCap(ROUND);
 
     // Base pass for readability (anchored).
-    strokeWeight(max(0.6, this.BIG_SIZE * px));
+    strokeWeight(this.BIG_SIZE);
     const bigN = min(this.n, this.BIG_N | 0);
     // Batch big anchors by kind to reduce state changes (same visual output).
     stroke(255, 255, 255, aBaseDim);
@@ -507,7 +505,7 @@ const Typography = {
       point(this.bigRect.x + tpl.cX[idx] * this.bigRect.w, this.bigRect.y + tpl.cY[idx] * this.bigRect.h);
     }
 
-    strokeWeight(max(0.6, this.SMALL_SIZE * px));
+    strokeWeight(this.SMALL_SIZE);
     const smallStart = bigN;
     for (let i = smallStart; i < this.n; i++) {
       const packed = this.anchor[i] >>> 0;
@@ -525,7 +523,7 @@ const Typography = {
     }
 
     // Moving texture for big letters only (half-rate for perf).
-    strokeWeight(max(0.6, max(1.2, this.BIG_SIZE * 0.72) * px));
+    strokeWeight(max(1.2, this.BIG_SIZE * 0.72));
     for (let i = 0; i < this.n; i++) {
       const packed = this.anchor[i] >>> 0;
       const gid = (packed >>> 24) & 0xff;
