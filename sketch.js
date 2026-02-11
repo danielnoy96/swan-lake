@@ -17,6 +17,7 @@ let compareMode = false;
 let compareAct = 1;
 let compareSrc0 = 0;
 let compareAlpha = 0.5;
+let _mainCanvasElt = null;
 function _applyUrlParams() {
   try {
     if (typeof location === "undefined") return;
@@ -47,8 +48,11 @@ function setup() {
   const physW = max(1, round(cssW * dpr));
   const physH = max(1, round(cssH * dpr));
   const cnv = createCanvas(physW, physH);
-  try { cnv?.style?.("width", `${cssW}px`); } catch (_) {}
-  try { cnv?.style?.("height", `${cssH}px`); } catch (_) {}
+  try { cnv?.id?.("mainCanvas"); } catch (_) {}
+  try { _mainCanvasElt = cnv?.elt || null; } catch (_) {}
+  // CSS sizing is handled via #mainCanvas rules in index.html; keep this as a fallback.
+  try { cnv?.style?.("width", "100vw"); } catch (_) {}
+  try { cnv?.style?.("height", "100vh"); } catch (_) {}
   applySimSeed();
   _applyUrlParams();
   try { cnv?.style?.("display", "block"); } catch (_) {}
@@ -91,9 +95,8 @@ function windowResized() {
   const physH = max(1, round(cssH * dpr));
   resizeCanvas(physW, physH);
   try {
-    // Keep the canvas visually full-screen in CSS pixels (prevents "everything looks bigger" artifacts).
-    const c = document.querySelector("canvas");
-    if (c) { c.style.width = `${cssW}px`; c.style.height = `${cssH}px`; }
+    // Keep the main canvas visually full-screen in CSS pixels (robust even if other canvases exist).
+    if (_mainCanvasElt) { _mainCanvasElt.style.width = "100vw"; _mainCanvasElt.style.height = "100vh"; }
   } catch (_) {}
   applySimSeed();
   try {
@@ -474,6 +477,17 @@ function keyPressed() {
       inFlight: Sampler.inFlight || 0,
       q: Sampler.queueLen ? Sampler.queueLen() : 0,
     };
+    try {
+      if (typeof document !== "undefined") {
+        const cs = document.querySelectorAll ? document.querySelectorAll("canvas") : null;
+        snap.canvasCount = cs ? cs.length : 0;
+        const main = document.getElementById ? document.getElementById("mainCanvas") : null;
+        if (main && main.getBoundingClientRect) {
+          const r = main.getBoundingClientRect();
+          snap.mainRect = { x: +r.x.toFixed(1), y: +r.y.toFixed(1), w: +r.width.toFixed(1), h: +r.height.toFixed(1) };
+        }
+      }
+    } catch (_) {}
     try {
       if (Sampler && typeof Sampler.framePixHash === "function") {
         snap.pixHash0 = Sampler.framePixHash(Acts.act, Acts.src0) >>> 0;
