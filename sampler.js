@@ -13,11 +13,12 @@ const Sampler = {
   // On-demand loader (avoids preloading hundreds of PNGs -> crashes/reload loops on mobile)
   queue: [],
   inFlight: 0,
-  maxInFlight: 2,
+  maxInFlight: 3,
   hits: 0, misses: 0, hitsF: 0, missesF: 0,
   init() {
     this.g = createGraphics(this.w, this.h);
     this.g.pixelDensity(1); this.g.noSmooth();
+    try { if (this.g.drawingContext) this.g.drawingContext.imageSmoothingEnabled = false; } catch (_) {}
   },
   realloc() {
     this.weights = new Float32Array(CELLS);
@@ -43,7 +44,27 @@ const Sampler = {
       loading: new Uint8Array(cycle),
       failed: new Uint8Array(cycle),
       counts: new Uint16Array(need),
+      pixHash: new Uint32Array(cycle),
+      countsHash: new Uint32Array(cycle),
+      imgW: new Uint16Array(cycle),
+      imgH: new Uint16Array(cycle),
     };
+  },
+  _fnv1aBytes(arr) {
+    let h = 2166136261 >>> 0;
+    for (let i = 0; i < arr.length; i++) {
+      h ^= arr[i] & 0xff;
+      h = Math.imul(h, 16777619) >>> 0;
+    }
+    return h >>> 0;
+  },
+  _fnv1aU16(arr, stride) {
+    let h = 2166136261 >>> 0;
+    for (let i = 0; i < arr.length; i += stride) {
+      h ^= arr[i] & 0xffff;
+      h = Math.imul(h, 16777619) >>> 0;
+    }
+    return h >>> 0;
   },
   _weightAt(px) {
     const a = this.g.pixels[px + 3] / 255; if (a <= 0.05) return 0;
@@ -52,12 +73,39 @@ const Sampler = {
   },
   _compute(img, outCounts, seed01) {
     fitRect(img.width, img.height, this.w, this.h, this.rG);
-    fitRect(img.width, img.height, width, height, this.rC);
+    // IMPORTANT: map the source into *grid cell space* (not canvas pixels).
+    // This makes cell assignment deterministic across hosts/viewports/DPR.
+    fitRect(img.width, img.height, COLS, ROWS, this.rC);
     const rG = this.rG, rC = this.rC;
 
+    // Quantize draw rect to integer pixels in the small buffer to avoid subpixel raster differences.
+    // (Subpixel scaling can produce slightly different results across hosts/GPUs even in the same browser.)
+    rG.x = Math.round(rG.x);
+    rG.y = Math.round(rG.y);
+    rG.w = Math.max(1, Math.round(rG.w));
+    rG.h = Math.max(1, Math.round(rG.h));
+    if (rG.x < 0) rG.x = 0;
+    if (rG.y < 0) rG.y = 0;
+    if (rG.x + rG.w > this.w) rG.w = Math.max(1, this.w - rG.x);
+    if (rG.y + rG.h > this.h) rG.h = Math.max(1, this.h - rG.y);
+
     this.g.clear(); this.g.background(0); this.g.imageMode(CORNER);
+    // Ensure nearest-neighbor in this buffer for stable sampling.
+    try { this.g.noSmooth(); } catch (_) {}
+    try {
+      if (this.g.drawingContext) {
+        this.g.drawingContext.imageSmoothingEnabled = false;
+        this.g.drawingContext.globalCompositeOperation = "source-over";
+        this.g.drawingContext.globalAlpha = 1;
+        if (this.g.drawingContext.setTransform) this.g.drawingContext.setTransform(1, 0, 0, 1, 0, 0);
+      }
+    } catch (_) {}
     this.g.image(img, rG.x, rG.y, rG.w, rG.h);
     this.g.loadPixels();
+
+    // Diagnostic: stable hash of the rasterized small buffer pixels.
+    // If this differs across hosts for the same (act, src), the divergence is in PNG decode/draw/rasterization.
+    const pixHash = this._fnv1aBytes(this.g.pixels);
 
     this.weights.fill(0);
     this.pixCount.fill(0);
@@ -65,20 +113,20 @@ const Sampler = {
     const x0 = max(0, floor(rG.x)), y0 = max(0, floor(rG.y));
     const x1 = min(this.w, ceil(rG.x + rG.w)), y1 = min(this.h, ceil(rG.y + rG.h));
 
-    const gx1 = gridX0 + COLS * cellW;
-    const gy1 = gridY0 + ROWS * cellH;
-
     for (let y = y0; y < y1; y++) {
       const row = y * this.w;
-      const iy = (y + 0.5 - rG.y) * ghInv, cy = rC.y + iy * rC.h;
-      if (cy < gridY0 || cy >= gy1) continue;
+      const iy = (y + 0.5 - rG.y) * ghInv;
+      const rCell = rC.y + iy * rC.h;
+      if (rCell < 0 || rCell >= ROWS) continue;
+      const rr = rCell | 0;
       for (let x = x0; x < x1; x++) {
         const p = 4 * (row + x);
         const w = this._weightAt(p);
         if (w <= 0) continue;
-        const ix = (x + 0.5 - rG.x) * gwInv, cx = rC.x + ix * rC.w;
-        if (cx < gridX0 || cx >= gx1) continue;
-        const cell = posToCell(cx, cy);
+        const ix = (x + 0.5 - rG.x) * gwInv;
+        const cCell = rC.x + ix * rC.w;
+        if (cCell < 0 || cCell >= COLS) continue;
+        const cell = rr * COLS + (cCell | 0);
         this.weights[cell] += w;
         if (this.pixCount[cell] < 65535) this.pixCount[cell]++;
       }
@@ -102,7 +150,7 @@ const Sampler = {
     }
 
     if (maxBr <= 1e-6) {
-      outCounts.fill(0); outCounts[posToCell(width * 0.5, height * 0.5)] = N; return;
+      outCounts.fill(0); outCounts[((ROWS >> 1) * COLS + (COLS >> 1)) | 0] = N; return;
     }
 
     // Normalize and build weights
@@ -142,7 +190,7 @@ const Sampler = {
     for (let i = 0; i < CELLS; i++) { this.weights[i] = this.tmp[i]; rawSum += this.weights[i]; }
 
     if (rawSum <= 1e-9) {
-      outCounts.fill(0); outCounts[posToCell(width * 0.5, height * 0.5)] = N; return;
+      outCounts.fill(0); outCounts[((ROWS >> 1) * COLS + (COLS >> 1)) | 0] = N; return;
     }
 
     // Systematic resampling: assigns exactly N particles with low variance and no scan-order bias
@@ -159,6 +207,12 @@ const Sampler = {
       while (i < CELLS - 1 && this.cdf[i] < th) i++;
       outCounts[i]++;
     }
+
+    // Diagnostic: stable hash of the resulting per-cell counts.
+    // Hash a stride so it's fast but still comparable.
+    const countsHash = this._fnv1aU16(outCounts, max(1, floor(CELLS / 512)));
+
+    return { pixHash, countsHash };
   },
   _path(a, idx) {
     // Keep filenames consistent with existing export: actX_00000.png ...
@@ -191,7 +245,13 @@ const Sampler = {
             if (!cc || cc.cycle !== cycle) return;
             const off = idx * CELLS;
             const seed01 = hash01(((a + 1) * 73856093) ^ ((idx + 1) * 19349663) ^ (cycle * 83492791));
-            this._compute(img, cc.counts.subarray(off, off + CELLS), seed01);
+            const out = cc.counts.subarray(off, off + CELLS);
+            const diag = this._compute(img, out, seed01);
+            // Persist diagnostics for cross-host comparisons.
+            cc.pixHash[idx] = (diag && diag.pixHash ? diag.pixHash : 0) >>> 0;
+            cc.countsHash[idx] = (diag && diag.countsHash ? diag.countsHash : 0) >>> 0;
+            cc.imgW[idx] = (img.width | 0) & 0xffff;
+            cc.imgH[idx] = (img.height | 0) & 0xffff;
             cc.done[idx] = 1;
           } catch (e) {
             try {
@@ -239,6 +299,21 @@ const Sampler = {
     return false;
   },
   counts(a) { return this.cache[a] ? this.cache[a].counts : null; },
+  framePixHash(a, idx) {
+    const c = this.cache[a];
+    if (!c || !c.pixHash || idx < 0 || idx >= c.cycle) return 0;
+    return c.pixHash[idx] >>> 0;
+  },
+  frameCountsHash(a, idx) {
+    const c = this.cache[a];
+    if (!c || !c.countsHash || idx < 0 || idx >= c.cycle) return 0;
+    return c.countsHash[idx] >>> 0;
+  },
+  frameImgWH(a, idx) {
+    const c = this.cache[a];
+    if (!c || !c.imgW || !c.imgH || idx < 0 || idx >= c.cycle) return { w: 0, h: 0 };
+    return { w: c.imgW[idx] | 0, h: c.imgH[idx] | 0 };
+  },
 };
 
 // ---- Particles: grid-density with local rebalancing + cheap separation ----

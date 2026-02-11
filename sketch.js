@@ -12,16 +12,80 @@ let _actDesiredFor = 0;
 const _prefOff = { off: 0 };
 let _debugDtSec = 0;
 let _debugRate = 0;
+let _soundOK = false;
+let compareMode = false;
+let compareAct = 1;
+let compareSrc0 = 0;
+let compareAlpha = 0.5;
+let _mainCanvasElt = null;
+let _cssTick = 0;
+function _ensureMainCanvasCss() {
+  try {
+    if (!_mainCanvasElt) _mainCanvasElt = document.getElementById ? document.getElementById("mainCanvas") : null;
+    if (!_mainCanvasElt) return;
+    _mainCanvasElt.style.position = "fixed";
+    _mainCanvasElt.style.left = "0";
+    _mainCanvasElt.style.top = "0";
+    _mainCanvasElt.style.width = "100vw";
+    _mainCanvasElt.style.height = "100vh";
+    _mainCanvasElt.style.display = "block";
+  } catch (_) {}
+}
+function _applyUrlParams() {
+  try {
+    if (typeof location === "undefined") return;
+    const qs = new URLSearchParams(location.search || "");
+    const cmp = qs.get("compare") || qs.get("cmp");
+    if (cmp === "1" || cmp === "true") {
+      compareMode = true;
+      audioStarted = true;
+    }
+    const actQ = qs.get("act");
+    if (actQ != null) compareAct = constrain(parseInt(actQ, 10) || 1, 1, 4);
+    const srcQ = qs.get("src") || qs.get("src0");
+    if (srcQ != null) compareSrc0 = parseInt(srcQ, 10) || 0;
+    const aQ = qs.get("alpha") || qs.get("a");
+    if (aQ != null) compareAlpha = constrain(parseFloat(aQ) || 0, 0, 1);
+    const dbgQ = qs.get("debug") || qs.get("d");
+    if (dbgQ === "1" || dbgQ === "true") debugOn = true;
+  } catch (_) {}
+}
 
 function setup() {
-  const cnv = createCanvas(windowWidth, windowHeight);
+  // Use a physical-pixel canvas size so the simulation/rendering look is consistent even when
+  // Chrome uses different devicePixelRatio/zoom per-site (localhost vs GitHub Pages).
   pixelDensity(1);
+  const cssW = (typeof window !== "undefined" ? (window.innerWidth || windowWidth) : windowWidth) | 0;
+  const cssH = (typeof window !== "undefined" ? (window.innerHeight || windowHeight) : windowHeight) | 0;
+  const dpr = (typeof window !== "undefined" ? (window.devicePixelRatio || 1) : 1) || 1;
+  const physW = max(1, round(cssW * dpr));
+  const physH = max(1, round(cssH * dpr));
+  const cnv = createCanvas(physW, physH);
+  try { _mainCanvasElt = cnv?.elt || null; } catch (_) {}
+  // Hard-set DOM id + CSS sizing here (more reliable than relying on p5.Element helpers across builds/hosts).
+  try {
+    if (_mainCanvasElt) {
+      _mainCanvasElt.id = "mainCanvas";
+      _ensureMainCanvasCss();
+    }
+  } catch (_) {}
+  applySimSeed();
+  _applyUrlParams();
   try { cnv?.style?.("display", "block"); } catch (_) {}
   try {
-    mic = new p5.AudioIn();
-    amp = new p5.Amplitude();
+    _soundOK = (typeof p5 !== "undefined" && typeof p5.AudioIn === "function" && typeof p5.Amplitude === "function");
+    if (_soundOK) {
+      mic = new p5.AudioIn();
+      amp = new p5.Amplitude();
+    } else {
+      // Fallback: allow Auto mode + visuals even if p5.sound failed to load on the host.
+      mic = { start: () => {}, stop: () => {} };
+      amp = { getLevel: () => 0, setInput: () => {} };
+      console.warn("[Audio] p5.sound not available; microphone disabled. Press 'A' for auto.");
+    }
 
     Style.init();
+    updatePageZoom();
     resizeGrid();
     Sampler.init();
     Particles.resizeBins();
@@ -39,14 +103,25 @@ function setup() {
 }
 
 function windowResized() {
-  resizeCanvas(windowWidth, windowHeight);
   pixelDensity(1);
+  const cssW = (typeof window !== "undefined" ? (window.innerWidth || windowWidth) : windowWidth) | 0;
+  const cssH = (typeof window !== "undefined" ? (window.innerHeight || windowHeight) : windowHeight) | 0;
+  const dpr = (typeof window !== "undefined" ? (window.devicePixelRatio || 1) : 1) || 1;
+  const physW = max(1, round(cssW * dpr));
+  const physH = max(1, round(cssH * dpr));
+  resizeCanvas(physW, physH);
+  try {
+    // Keep the main canvas visually full-screen in CSS pixels (robust even if other canvases exist).
+    if (!_mainCanvasElt) _mainCanvasElt = document.getElementById ? document.getElementById("mainCanvas") : null;
+    _ensureMainCanvasCss();
+  } catch (_) {}
+  applySimSeed();
   try {
     Style.init();
+    updatePageZoom();
     resizeGrid();
     Particles.resizeBins();
     Particles.init();
-    Sampler.resetAllCaches();
     Typography.resize();
   } catch (e) {
     window.__fatalError = e?.stack || String(e);
@@ -54,6 +129,8 @@ function windowResized() {
 }
 
 function draw() {
+  // Some hosts/extensions can mutate the canvas element styles; periodically re-assert full-screen CSS.
+  if (((_cssTick++) & 31) === 0) _ensureMainCanvasCss();
   if (window.__fatalError) {
     background(0);
     fill(255);
@@ -80,10 +157,10 @@ function draw() {
   const dtSec = constrain((typeof deltaTime === "number" ? deltaTime : 16.7) / 1000, 0, 0.10);
   _debugDtSec = dtSec;
 
-  if (autoRun) {
+  if (!compareMode && autoRun) {
     t += AUTO_SPEED * dtSec;
     _debugRate = AUTO_SPEED;
-  } else if (micRunning && level > MIC_THRESHOLD) {
+  } else if (!compareMode && micRunning && level > MIC_THRESHOLD) {
     // Mic speed in sound-seconds per real second.
     // Quickly reaches 1.0 so "always loud" finishes a full loop in ~60s like Auto.
     const rate = map(level, MIC_THRESHOLD, MIC_THRESHOLD + 0.02, 0.35, 1.0, true);
@@ -96,6 +173,11 @@ function draw() {
   tDelta = t - _prevT;
   tAdvanced = tDelta !== 0;
   _prevT = t;
+  if (compareMode) {
+    // Drive motion even while time is frozen for deterministic cross-host comparisons.
+    tAdvanced = true;
+    tDelta = 0.016;
+  }
 
   // Fade scene visibility based on mic level (objects/text appear only with noise).
   // NOT tied to `t`, so it can fade out when `t` is frozen.
@@ -111,7 +193,27 @@ function draw() {
 
   try {
     Sampler.resetFrameStats();
-    Acts.update();
+    if (compareMode) {
+      Acts.mode = "ACT";
+      Acts.act = constrain(compareAct | 0, 1, 4);
+      Acts.next = nextActWithFrames(Acts.act);
+      Acts.cycle = SRC_COUNT[Acts.act] || 0;
+      Acts.fps = FPS_EFFECTIVE[Acts.act] || 24;
+      Acts.elapsed = 0;
+      Acts.dur = Acts.cycle > 0 && Acts.fps > 0 ? Acts.cycle / Acts.fps : 0;
+      if (Acts.cycle > 0) {
+        Acts.src0 = ((compareSrc0 | 0) % Acts.cycle + Acts.cycle) % Acts.cycle;
+        Acts.src1 = (Acts.src0 + 1) % Acts.cycle;
+        Acts.alpha = constrain(compareAlpha, 0, 1);
+        Acts.cycles = 0;
+      } else {
+        Acts.src0 = Acts.src1 = 0;
+        Acts.alpha = 0;
+        Acts.cycles = 0;
+      }
+    } else {
+      Acts.update();
+    }
     Style.update(Acts, level);
     background(Render.bg);
 
@@ -125,7 +227,7 @@ function draw() {
         const ok1 = Sampler.ensure(Acts.act, Acts.src1, Acts.cycle, _off1);
 
         // Prefetch a small window ahead so bursty inputs (claps) don't cause missing-frame fallbacks.
-        if (!autoRun && tAdvanced) {
+        if (tAdvanced && !compareMode) {
           Sampler.ensure(Acts.act, (Acts.src0 + 1) % Acts.cycle, Acts.cycle, _prefOff);
           Sampler.ensure(Acts.act, (Acts.src0 + 2) % Acts.cycle, Acts.cycle, _prefOff);
           Sampler.ensure(Acts.act, (Acts.src1 + 1) % Acts.cycle, Acts.cycle, _prefOff);
@@ -288,14 +390,23 @@ function drawStartScreen() {
   noStroke();
   textAlign(CENTER, CENTER);
   textSize(18);
-  text("Tap to activate microphone\nSound drives the animation", width / 2, height / 2);
+  if (_soundOK) {
+    text("Tap to activate microphone\nSound drives the animation", width / 2, height / 2);
+  } else {
+    text("Audio unavailable (p5.sound failed to load)\nPress 'A' for Auto mode", width / 2, height / 2);
+  }
 }
 
 function mousePressed() {
   // Allow starting the mic even if we previously ran in Auto mode.
   if (autoRun) return;
   if (micRunning) return;
-  userStartAudio();
+  if (!_soundOK || !mic || typeof mic.start !== "function") {
+    // Don't crash on hosts where p5.sound didn't load; keep the sketch running.
+    console.warn("[Audio] Mic start requested but p5.sound/mic is unavailable. Press 'A' for auto.");
+    return;
+  }
+  if (typeof userStartAudio === "function") userStartAudio();
   mic.start(() => {
     amp.setInput(mic);
     audioStarted = true;
@@ -315,17 +426,145 @@ function keyPressed() {
       if (!micRunning) audioStarted = false;
     }
   }
+  if (key === "c" || key === "C") {
+    compareMode = !compareMode;
+    audioStarted = true;
+    // Helpful when sharing: reflect current compare state in the URL (no reload).
+    try {
+      if (typeof history !== "undefined" && typeof location !== "undefined") {
+        const qs = new URLSearchParams(location.search || "");
+        if (compareMode) qs.set("compare", "1");
+        else qs.delete("compare");
+        qs.set("act", String(compareAct));
+        qs.set("src", String(compareSrc0));
+        qs.set("alpha", String(compareAlpha.toFixed(3)));
+        const url = location.pathname + (qs.toString() ? "?" + qs.toString() : "");
+        history.replaceState(null, "", url);
+      }
+    } catch (_) {}
+  }
+  if (compareMode) {
+    if (key === "1") compareAct = 1;
+    if (key === "2") compareAct = 2;
+    if (key === "3") compareAct = 3;
+    if (key === "4") compareAct = 4;
+    if (keyCode === LEFT_ARROW) compareSrc0 -= (keyIsDown(SHIFT) ? 10 : 1);
+    if (keyCode === RIGHT_ARROW) compareSrc0 += (keyIsDown(SHIFT) ? 10 : 1);
+    if (keyCode === UP_ARROW) compareAlpha = constrain(compareAlpha + (keyIsDown(SHIFT) ? 0.10 : 0.02), 0, 1);
+    if (keyCode === DOWN_ARROW) compareAlpha = constrain(compareAlpha - (keyIsDown(SHIFT) ? 0.10 : 0.02), 0, 1);
+    // Update URL for easy sharing/debugging (no reload).
+    try {
+      if (typeof history !== "undefined" && typeof location !== "undefined") {
+        const qs = new URLSearchParams(location.search || "");
+        qs.set("compare", "1");
+        qs.set("act", String(compareAct));
+        qs.set("src", String(compareSrc0));
+        qs.set("alpha", String(compareAlpha.toFixed(3)));
+        const url = location.pathname + "?" + qs.toString();
+        history.replaceState(null, "", url);
+      }
+    } catch (_) {}
+  }
+  if (key === "p" || key === "P") {
+    const dpr = (typeof window !== "undefined" ? (window.devicePixelRatio || 1) : 1) || 1;
+    const z = (typeof pageZoom === "number" ? pageZoom : 1) || 1;
+    const pd = (typeof pixelDensity === "function" ? pixelDensity() : 1) || 1;
+    const snap = {
+      href: (typeof location !== "undefined" ? location.href : ""),
+      dpr: +dpr.toFixed(3),
+      zoom: +z.toFixed(3),
+      // Canvas logical coords are in physical pixels (we size the canvas to innerWidth*dpr and set pixelDensity(1)).
+      w: width, h: height,
+      cssW: (typeof window !== "undefined" ? (window.innerWidth || 0) : 0),
+      cssH: (typeof window !== "undefined" ? (window.innerHeight || 0) : 0),
+      // Actual backing-store size (what the canvas really renders at in pixels)
+      bufW: Math.round(width * pd),
+      bufH: Math.round(height * pd),
+      grid: `${COLS}x${ROWS}`,
+      cell: +cellW.toFixed(3),
+      soundOK: !!_soundOK,
+      micRunning: !!micRunning,
+      autoRun: !!autoRun,
+      compareMode: !!compareMode,
+      mode: Acts.mode,
+      act: Acts.act,
+      src0: Acts.src0,
+      src1: Acts.src1,
+      a: +Acts.alpha.toFixed(3),
+      ready: (Sampler.ready ? Sampler.ready(Acts.act) : 0),
+      hits: Sampler.hits, misses: Sampler.misses,
+      inFlight: Sampler.inFlight || 0,
+      q: Sampler.queueLen ? Sampler.queueLen() : 0,
+    };
+    try {
+      if (typeof document !== "undefined") {
+        const cs = document.querySelectorAll ? document.querySelectorAll("canvas") : null;
+        snap.canvasCount = cs ? cs.length : 0;
+        const main = document.getElementById ? document.getElementById("mainCanvas") : null;
+        if (main && main.getBoundingClientRect) {
+          const r = main.getBoundingClientRect();
+          snap.mainRect = { x: +r.x.toFixed(1), y: +r.y.toFixed(1), w: +r.width.toFixed(1), h: +r.height.toFixed(1) };
+        }
+      }
+    } catch (_) {}
+    try {
+      if (Sampler && typeof Sampler.framePixHash === "function") {
+        snap.pixHash0 = Sampler.framePixHash(Acts.act, Acts.src0) >>> 0;
+        snap.pixHash1 = Sampler.framePixHash(Acts.act, Acts.src1) >>> 0;
+      }
+      if (Sampler && typeof Sampler.frameCountsHash === "function") {
+        snap.countsHash0 = Sampler.frameCountsHash(Acts.act, Acts.src0) >>> 0;
+        snap.countsHash1 = Sampler.frameCountsHash(Acts.act, Acts.src1) >>> 0;
+      }
+      if (Sampler && typeof Sampler.frameImgWH === "function") {
+        snap.img0 = Sampler.frameImgWH(Acts.act, Acts.src0);
+        snap.img1 = Sampler.frameImgWH(Acts.act, Acts.src1);
+      }
+    } catch (_) {}
+    try {
+      if (typeof Particles !== "undefined" && Particles && Particles.desired && Particles.desired.length) {
+        let h = 2166136261 >>> 0;
+        // Hash a subset of cells for speed (still stable + comparable).
+        const arr = Particles.desired;
+        const step = max(1, floor(arr.length / 512));
+        for (let i = 0; i < arr.length; i += step) {
+          h ^= arr[i] & 0xffff;
+          h = Math.imul(h, 16777619) >>> 0;
+        }
+        snap.desiredHash = h >>> 0;
+      }
+    } catch (_) {}
+    console.log("[SNAP]", snap);
+  }
 }
 
 function drawDebug(level, desiredSum, moved, mismatch) {
   const ready = Sampler.ready ? Sampler.ready(Acts.act) : 0;
   const q = Sampler.queueLen ? Sampler.queueLen() : 0;
   const typ = (Typography && Typography.debugString) ? Typography.debugString() : "";
+  const dpr = (typeof window !== "undefined" ? (window.devicePixelRatio || 1) : 1);
+  const pd = (typeof pixelDensity === "function" ? pixelDensity() : 1) || 1;
+  const z = (typeof pageZoom === "number" ? pageZoom : 1) || 1;
+  const bufW = round(width * pd);
+  const bufH = round(height * pd);
+  const cssW = (typeof window !== "undefined" ? (window.innerWidth || 0) : 0);
+  const cssH = (typeof window !== "undefined" ? (window.innerHeight || 0) : 0);
+  let pix0 = 0, pix1 = 0, ch0 = 0, ch1 = 0;
+  try {
+    if (Sampler && typeof Sampler.framePixHash === "function") {
+      pix0 = Sampler.framePixHash(Acts.act, Acts.src0) >>> 0;
+      pix1 = Sampler.framePixHash(Acts.act, Acts.src1) >>> 0;
+    }
+    if (Sampler && typeof Sampler.frameCountsHash === "function") {
+      ch0 = Sampler.frameCountsHash(Acts.act, Acts.src0) >>> 0;
+      ch1 = Sampler.frameCountsHash(Acts.act, Acts.src1) >>> 0;
+    }
+  } catch (_) {}
 
   push();
   noStroke();
   fill(0, 160);
-  rect(10, 10, 520, 106, 8);
+  rect(10, 10, 520, 122, 8);
   fill(255);
   textSize(12);
   textAlign(LEFT, TOP);
@@ -333,7 +572,13 @@ function drawDebug(level, desiredSum, moved, mismatch) {
   const step = max(1, (FRAME_STEP && FRAME_STEP[Acts.act]) | 0);
   const framesPerCycle = Acts.cycle > 0 ? ceil(Acts.cycle / step) : 0;
   text(`cycle:${Acts.cycle} SRC:${SRC_COUNT[Acts.act] || 0} step:${step} fCycle:${framesPerCycle} ready:${ready}  src0/src1:${Acts.src0}/${Acts.src1} a:${Acts.alpha.toFixed(2)} cycles:${Acts.cycles}`, 18, 32);
-  text(`grid:${COLS}x${ROWS} desiredSum:${desiredSum} moved:${moved} mismatch:${mismatch} meanDist:${debugMeanCellDist.toFixed(1)} catchUp:${catchUp.toFixed(2)} hot:${_hotCount} lane:${debugTransport}  cache(h/m):${Sampler.hitsF}/${Sampler.missesF} total:${Sampler.hits}/${Sampler.misses} inFlight:${Sampler.inFlight || 0} q:${q} level:${level.toFixed(3)}  ${typ}`, 18, 48);
+  text(`grid:${COLS}x${ROWS} cell:${cellW.toFixed(2)} zoom:${z.toFixed(2)} dpr:${dpr.toFixed(2)} pd:${pd.toFixed(2)} css:${cssW}x${cssH} buf:${bufW}x${bufH} desiredSum:${desiredSum} moved:${moved} mismatch:${mismatch} meanDist:${debugMeanCellDist.toFixed(1)} catchUp:${catchUp.toFixed(2)} hot:${_hotCount} lane:${debugTransport}  cache(h/m):${Sampler.hitsF}/${Sampler.missesF} total:${Sampler.hits}/${Sampler.misses} inFlight:${Sampler.inFlight || 0} q:${q} level:${level.toFixed(3)}  ${typ}`, 18, 48);
   text(`imagesDrawnToCanvas:${imagesDrawnToCanvas}`, 18, 64);
+  if (pix0 || pix1 || ch0 || ch1) {
+    text(`pixHash0/1:${pix0}/${pix1}  countsHash0/1:${ch0}/${ch1}`, 18, 96);
+  }
+  if (compareMode) {
+    text(`COMPARE: act=${compareAct} src0=${compareSrc0} alpha=${compareAlpha.toFixed(2)}  (1-4 act, ←/→ src, ↑/↓ alpha, C toggle)`, 18, 80);
+  }
   pop();
 }

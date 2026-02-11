@@ -51,12 +51,20 @@
     } catch (_) {}
   }, 1500);
   window.addEventListener("error", (e) => {
+    // Ignore errors from browser extensions; they can appear on GitHub Pages / Live Server
+    // and shouldn't stop the sketch.
+    try {
+      const file = String(e?.filename || "");
+      if (file.startsWith("chrome-extension://")) return;
+    } catch (_) {}
     const msg = String(e?.message || e || "Unknown error");
     const src = e?.filename ? `\n@ ${e.filename}:${e.lineno || 0}:${e.colno || 0}` : "";
     show(`[ERROR]\n${msg}${src}`);
   });
   window.addEventListener("unhandledrejection", (e) => {
     const msg = String(e?.reason?.stack || e?.reason || "Unhandled rejection");
+    // Same: ignore extension-origin stacks so they don't freeze the sketch.
+    if (msg.includes("chrome-extension://")) return;
     show(`[REJECTION]\n${msg}`);
   });
 })();
@@ -71,11 +79,57 @@ const FRAME_STEP = { 1: 1, 2: 1, 3: 1, 4: 1 };
 
 const TARGET_W = 160, TARGET_H = 284;
 const CELL_SIZE = 18; // square grid size (px) (tune: larger -> fewer cells -> denser silhouettes)
+// Fixed simulation grid (keeps particle redistribution stable across different viewport sizes/hosts).
+// This matches the common "good" resolution from local runs.
+const GRID_COLS = 137;
+const GRID_ROWS = 74;
 const N = 4200, BLACK_PCT = 0.1;
 const TRANSITION_DURATION = 2.6, DANCE_PORTION = 0.78;
 const MIC_THRESHOLD = 0.03;
 // Auto mode speed in sound-seconds per real second (applied with dt).
 const AUTO_SPEED = 1.0;
+// Deterministic seed so local vs GitHub Pages initialize identically.
+const SIM_SEED = 1337;
+// Backing-store density cap for performance (still uses devicePixelRatio up to this cap).
+// Keeping this >1 avoids the "upscaled/soft" look on high-DPR hosts (e.g., GitHub Pages at 125%/150% zoom).
+const PIXEL_DENSITY_CAP = 1.5;
+function applyPixelDensity() {
+  try {
+    const dpr = max(1, (typeof window !== "undefined" ? (window.devicePixelRatio || 1) : 1));
+    pixelDensity(min(PIXEL_DENSITY_CAP, dpr));
+  } catch (_) {}
+}
+function applySimSeed() {
+  try { randomSeed(SIM_SEED); } catch (_) {}
+  try { noiseSeed(SIM_SEED); } catch (_) {}
+}
+// Page zoom compensation:
+// GitHub Pages can end up with a different per-site zoom than localhost (even on the same device/browser),
+// which changes `windowWidth/windowHeight` and therefore the grid resolution + particle look.
+// We measure zoom and compensate the grid cell size so the simulation stays consistent.
+let pageZoom = 1;
+function _measurePageZoom() {
+  try {
+    const d = document.createElement("div");
+    d.style.cssText = "position:absolute;left:-1000px;top:-1000px;width:1in;height:1in;";
+    document.body.appendChild(d);
+    const px = d.getBoundingClientRect().width || 96;
+    d.remove();
+    // 1in should be 96 CSS px at 100% zoom.
+    const z = px / 96;
+    if (isFinite(z) && z > 0.2 && z < 6) return z;
+  } catch (_) {}
+  // Fallback (less accurate for zoom, but better than nothing)
+  try {
+    const dpr = (typeof window !== "undefined" ? (window.devicePixelRatio || 1) : 1);
+    return isFinite(dpr) && dpr > 0 ? dpr : 1;
+  } catch (_) {}
+  return 1;
+}
+function updatePageZoom() {
+  // Clamp to avoid wild values on some mobile browsers.
+  pageZoom = constrain(_measurePageZoom(), 0.5, 3);
+}
 
 // Scene visibility (fade in/out based on mic level; independent of sound-time `t` so it can fade out on silence)
 const VIS_IN = 0.16;
@@ -122,18 +176,27 @@ let gridX0 = 0, gridY0 = 0;
 let cellW = 1, cellH = 1, invCellW = 1, invCellH = 1;
 
 function resizeGrid() {
-  cellW = CELL_SIZE;
-  cellH = CELL_SIZE;
-  COLS = max(1, floor(width / cellW));
-  ROWS = max(1, floor(height / cellH));
+  // Letterbox the simulation to a fixed grid resolution so the computed density field
+  // (and therefore particle look) stays consistent across different viewport sizes/aspects.
+  COLS = GRID_COLS;
+  ROWS = GRID_ROWS;
   CELLS = COLS * ROWS;
-  gridX0 = (width - COLS * cellW) * 0.5;
-  gridY0 = (height - ROWS * cellH) * 0.5;
+
+  const aspect = COLS / max(1, ROWS);
+  let gw = min(width, height * aspect);
+  let gh = gw / aspect;
+  if (gh > height) { gh = height; gw = gh * aspect; }
+
+  gridX0 = (width - gw) * 0.5;
+  gridY0 = (height - gh) * 0.5;
+  cellW = gw / COLS;
+  cellH = gh / ROWS;
   invCellW = 1 / max(1e-6, cellW);
   invCellH = 1 / max(1e-6, cellH);
   Sampler.realloc();
   Particles.realloc();
-  Sampler.resetAllCaches();
+  // NOTE: We intentionally do NOT reset the sampler cache on resize.
+  // The sampler now computes density in grid-cell space (COLSxROWS), so cached frames remain valid.
 }
 function posToCell(x, y) {
   let c = ((x - gridX0) * invCellW) | 0, r = ((y - gridY0) * invCellH) | 0;

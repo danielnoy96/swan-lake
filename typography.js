@@ -163,6 +163,20 @@ const Typography = {
     const g = createGraphics(W, H);
     g.pixelDensity(1);
     g.noSmooth();
+    // We read pixels from this buffer to build a mask; optimize for frequent readback.
+    try {
+      const ctx = g.canvas && g.canvas.getContext ? g.canvas.getContext("2d", { willReadFrequently: true }) : null;
+      if (ctx) {
+        g.drawingContext = ctx;
+        if (g._renderer) g._renderer.drawingContext = ctx;
+        try {
+          ctx.imageSmoothingEnabled = false;
+          if (ctx.setTransform) ctx.setTransform(1, 0, 0, 1, 0, 0);
+          ctx.globalCompositeOperation = "source-over";
+          ctx.globalAlpha = 1;
+        } catch (_) {}
+      }
+    } catch (_) {}
     g.clear();
     g.imageMode(CORNER);
     if (opt.drawMode === "STRETCH") {
@@ -171,6 +185,15 @@ const Typography = {
       // FIT into buffer (preserve aspect)
       const r = { x: 0, y: 0, w: 0, h: 0 };
       fitRect(img.width, img.height, W, H, r);
+      // Quantize to avoid subpixel differences between hosts/GPUs.
+      r.x = round(r.x);
+      r.y = round(r.y);
+      r.w = max(1, round(r.w));
+      r.h = max(1, round(r.h));
+      if (r.x < 0) r.x = 0;
+      if (r.y < 0) r.y = 0;
+      if (r.x + r.w > W) r.w = max(1, W - r.x);
+      if (r.y + r.h > H) r.h = max(1, H - r.y);
       g.image(img, r.x, r.y, r.w, r.h);
     }
     g.loadPixels();
@@ -473,8 +496,10 @@ const Typography = {
     push();
     blendMode(ADD);
     strokeCap(ROUND);
+    const hx = (v) => ((v | 0) + 0.5);
 
     // Base pass for readability (anchored).
+    // Keep subpixel positions so the typography matches the "diamond" particle look.
     strokeWeight(this.BIG_SIZE);
     const bigN = min(this.n, this.BIG_N | 0);
     // Batch big anchors by kind to reduce state changes (same visual output).
@@ -485,7 +510,7 @@ const Typography = {
       const idx = packed & 0xffffff;
       const tpl = this._big;
       if (idx >= tpl.n) continue;
-      point(this.bigRect.x + tpl.cX[idx] * this.bigRect.w, this.bigRect.y + tpl.cY[idx] * this.bigRect.h);
+      point(hx(this.bigRect.x + tpl.cX[idx] * this.bigRect.w), hx(this.bigRect.y + tpl.cY[idx] * this.bigRect.h));
     }
     stroke(255, 255, 255, aBaseHi);
     for (let i = 0; i < bigN; i++) {
@@ -494,7 +519,7 @@ const Typography = {
       const idx = packed & 0xffffff;
       const tpl = this._big;
       if (idx >= tpl.n) continue;
-      point(this.bigRect.x + tpl.cX[idx] * this.bigRect.w, this.bigRect.y + tpl.cY[idx] * this.bigRect.h);
+      point(hx(this.bigRect.x + tpl.cX[idx] * this.bigRect.w), hx(this.bigRect.y + tpl.cY[idx] * this.bigRect.h));
     }
 
     strokeWeight(this.SMALL_SIZE);
@@ -510,8 +535,8 @@ const Typography = {
       stroke(255, 255, 255, (this.kind[i] ? aBaseHi : aBaseDim) * tw);
       const ax = this.smallRect.x + tpl.cX[idx] * this.smallRect.w;
       const ay = this.smallRect.y + tpl.cY[idx] * this.smallRect.h;
-      point(ax, ay);
-      if ((i & 1) === 0) point(ax + this._stampOx[i], ay + this._stampOy[i]);
+      point(hx(ax), hx(ay));
+      if ((i & 1) === 0) point(hx(ax + this._stampOx[i]), hx(ay + this._stampOy[i]));
     }
 
     // Moving texture for big letters only (half-rate for perf).
@@ -523,7 +548,7 @@ const Typography = {
       if ((i & 1) === 1) continue;
       const tw = 0.5 + 0.5 * sin(t * 0.12 + this.seed[i]);
       stroke(255, 255, 255, (this.kind[i] ? aMoveHi : aMoveDim) * (0.75 + 0.25 * tw));
-      point(this.bigRect.x + this.x[i] * this.bigRect.w, this.bigRect.y + this.y[i] * this.bigRect.h);
+      point(hx(this.bigRect.x + this.x[i] * this.bigRect.w), hx(this.bigRect.y + this.y[i] * this.bigRect.h));
     }
 
     blendMode(BLEND);
