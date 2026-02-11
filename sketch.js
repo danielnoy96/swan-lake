@@ -83,7 +83,6 @@ function windowResized() {
     resizeGrid();
     Particles.resizeBins();
     Particles.init();
-    Sampler.resetAllCaches();
     Typography.resize();
   } catch (e) {
     window.__fatalError = e?.stack || String(e);

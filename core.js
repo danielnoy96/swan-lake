@@ -196,7 +196,8 @@ function resizeGrid() {
   invCellH = 1 / max(1e-6, cellH);
   Sampler.realloc();
   Particles.realloc();
-  Sampler.resetAllCaches();
+  // NOTE: We intentionally do NOT reset the sampler cache on resize.
+  // The sampler now computes density in grid-cell space (COLSxROWS), so cached frames remain valid.
 }
 function posToCell(x, y) {
   let c = ((x - gridX0) * invCellW) | 0, r = ((y - gridY0) * invCellH) | 0;
