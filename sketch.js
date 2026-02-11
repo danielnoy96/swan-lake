@@ -17,11 +17,31 @@ let compareMode = false;
 let compareAct = 1;
 let compareSrc0 = 0;
 let compareAlpha = 0.5;
+function _applyUrlParams() {
+  try {
+    if (typeof location === "undefined") return;
+    const qs = new URLSearchParams(location.search || "");
+    const cmp = qs.get("compare") || qs.get("cmp");
+    if (cmp === "1" || cmp === "true") {
+      compareMode = true;
+      audioStarted = true;
+    }
+    const actQ = qs.get("act");
+    if (actQ != null) compareAct = constrain(parseInt(actQ, 10) || 1, 1, 4);
+    const srcQ = qs.get("src") || qs.get("src0");
+    if (srcQ != null) compareSrc0 = parseInt(srcQ, 10) || 0;
+    const aQ = qs.get("alpha") || qs.get("a");
+    if (aQ != null) compareAlpha = constrain(parseFloat(aQ) || 0, 0, 1);
+    const dbgQ = qs.get("debug") || qs.get("d");
+    if (dbgQ === "1" || dbgQ === "true") debugOn = true;
+  } catch (_) {}
+}
 
 function setup() {
   const cnv = createCanvas(windowWidth, windowHeight);
   applyPixelDensity();
   applySimSeed();
+  _applyUrlParams();
   try { cnv?.style?.("display", "block"); } catch (_) {}
   try {
     _soundOK = (typeof p5 !== "undefined" && typeof p5.AudioIn === "function" && typeof p5.Amplitude === "function");
@@ -369,6 +389,19 @@ function keyPressed() {
   if (key === "c" || key === "C") {
     compareMode = !compareMode;
     audioStarted = true;
+    // Helpful when sharing: reflect current compare state in the URL (no reload).
+    try {
+      if (typeof history !== "undefined" && typeof location !== "undefined") {
+        const qs = new URLSearchParams(location.search || "");
+        if (compareMode) qs.set("compare", "1");
+        else qs.delete("compare");
+        qs.set("act", String(compareAct));
+        qs.set("src", String(compareSrc0));
+        qs.set("alpha", String(compareAlpha.toFixed(3)));
+        const url = location.pathname + (qs.toString() ? "?" + qs.toString() : "");
+        history.replaceState(null, "", url);
+      }
+    } catch (_) {}
   }
   if (compareMode) {
     if (key === "1") compareAct = 1;
@@ -379,6 +412,18 @@ function keyPressed() {
     if (keyCode === RIGHT_ARROW) compareSrc0 += (keyIsDown(SHIFT) ? 10 : 1);
     if (keyCode === UP_ARROW) compareAlpha = constrain(compareAlpha + (keyIsDown(SHIFT) ? 0.10 : 0.02), 0, 1);
     if (keyCode === DOWN_ARROW) compareAlpha = constrain(compareAlpha - (keyIsDown(SHIFT) ? 0.10 : 0.02), 0, 1);
+    // Update URL for easy sharing/debugging (no reload).
+    try {
+      if (typeof history !== "undefined" && typeof location !== "undefined") {
+        const qs = new URLSearchParams(location.search || "");
+        qs.set("compare", "1");
+        qs.set("act", String(compareAct));
+        qs.set("src", String(compareSrc0));
+        qs.set("alpha", String(compareAlpha.toFixed(3)));
+        const url = location.pathname + "?" + qs.toString();
+        history.replaceState(null, "", url);
+      }
+    } catch (_) {}
   }
   if (key === "p" || key === "P") {
     const dpr = (typeof window !== "undefined" ? (window.devicePixelRatio || 1) : 1) || 1;

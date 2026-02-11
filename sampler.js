@@ -63,11 +63,9 @@ const Sampler = {
   },
   _compute(img, outCounts, seed01) {
     fitRect(img.width, img.height, this.w, this.h, this.rG);
-    // IMPORTANT: map the source into the *grid rect* (not the full canvas).
-    // This keeps cell assignment stable when the canvas aspect/size changes across hosts.
-    fitRect(img.width, img.height, COLS * cellW, ROWS * cellH, this.rC);
-    this.rC.x += gridX0;
-    this.rC.y += gridY0;
+    // IMPORTANT: map the source into *grid cell space* (not canvas pixels).
+    // This makes cell assignment deterministic across hosts/viewports/DPR.
+    fitRect(img.width, img.height, COLS, ROWS, this.rC);
     const rG = this.rG, rC = this.rC;
 
     this.g.clear(); this.g.background(0); this.g.imageMode(CORNER);
@@ -80,20 +78,20 @@ const Sampler = {
     const x0 = max(0, floor(rG.x)), y0 = max(0, floor(rG.y));
     const x1 = min(this.w, ceil(rG.x + rG.w)), y1 = min(this.h, ceil(rG.y + rG.h));
 
-    const gx1 = gridX0 + COLS * cellW;
-    const gy1 = gridY0 + ROWS * cellH;
-
     for (let y = y0; y < y1; y++) {
       const row = y * this.w;
-      const iy = (y + 0.5 - rG.y) * ghInv, cy = rC.y + iy * rC.h;
-      if (cy < gridY0 || cy >= gy1) continue;
+      const iy = (y + 0.5 - rG.y) * ghInv;
+      const rCell = rC.y + iy * rC.h;
+      if (rCell < 0 || rCell >= ROWS) continue;
+      const rr = rCell | 0;
       for (let x = x0; x < x1; x++) {
         const p = 4 * (row + x);
         const w = this._weightAt(p);
         if (w <= 0) continue;
-        const ix = (x + 0.5 - rG.x) * gwInv, cx = rC.x + ix * rC.w;
-        if (cx < gridX0 || cx >= gx1) continue;
-        const cell = posToCell(cx, cy);
+        const ix = (x + 0.5 - rG.x) * gwInv;
+        const cCell = rC.x + ix * rC.w;
+        if (cCell < 0 || cCell >= COLS) continue;
+        const cell = rr * COLS + (cCell | 0);
         this.weights[cell] += w;
         if (this.pixCount[cell] < 65535) this.pixCount[cell]++;
       }
@@ -117,7 +115,7 @@ const Sampler = {
     }
 
     if (maxBr <= 1e-6) {
-      outCounts.fill(0); outCounts[posToCell(width * 0.5, height * 0.5)] = N; return;
+      outCounts.fill(0); outCounts[((ROWS >> 1) * COLS + (COLS >> 1)) | 0] = N; return;
     }
 
     // Normalize and build weights
@@ -157,7 +155,7 @@ const Sampler = {
     for (let i = 0; i < CELLS; i++) { this.weights[i] = this.tmp[i]; rawSum += this.weights[i]; }
 
     if (rawSum <= 1e-9) {
-      outCounts.fill(0); outCounts[posToCell(width * 0.5, height * 0.5)] = N; return;
+      outCounts.fill(0); outCounts[((ROWS >> 1) * COLS + (COLS >> 1)) | 0] = N; return;
     }
 
     // Systematic resampling: assigns exactly N particles with low variance and no scan-order bias
