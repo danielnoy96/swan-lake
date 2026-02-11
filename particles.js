@@ -723,27 +723,28 @@
     const sizeScale = (typeof cellW === "number" && typeof CELL_SIZE === "number" && CELL_SIZE > 0)
       ? (cellW / CELL_SIZE)
       : 1;
-    const swBase = max(1.0, PARTICLE_SIZE * sizeScale);
+    // Quantize size + positions to reduce host-dependent anti-aliasing differences (localhost vs Pages).
+    const swBase = max(1.0, round(PARTICLE_SIZE * sizeScale));
 
     if (!stageA) {
       strokeWeight(swBase);
       stroke(255, 255, 255, LIGHT_ALPHA * aScene);
-      for (let i = 0; i < N; i++) point(this.x[i], this.y[i]);
+      for (let i = 0; i < N; i++) point(((this.x[i] + 0.5) | 0), ((this.y[i] + 0.5) | 0));
     } else {
       // Tail (faded)
-      strokeWeight(max(1.0, swBase - 0.2 * sizeScale));
+      strokeWeight(max(1.0, round(swBase - 0.2 * sizeScale)));
       stroke(255, 255, 255, (LIGHT_ALPHA * 0.28) * aScene);
-      for (let i = 0; i < N; i++) if (this.slotU[i] > 0.58) point(this.x[i], this.y[i]);
+      for (let i = 0; i < N; i++) if (this.slotU[i] > 0.58) point(((this.x[i] + 0.5) | 0), ((this.y[i] + 0.5) | 0));
 
       // Mid
       strokeWeight(swBase);
       stroke(255, 255, 255, (LIGHT_ALPHA * 0.62) * aScene);
-      for (let i = 0; i < N; i++) if (this.slotU[i] > 0.22 && this.slotU[i] <= 0.58) point(this.x[i], this.y[i]);
+      for (let i = 0; i < N; i++) if (this.slotU[i] > 0.22 && this.slotU[i] <= 0.58) point(((this.x[i] + 0.5) | 0), ((this.y[i] + 0.5) | 0));
 
       // Head (more saturated)
-      strokeWeight(swBase + 1.2 * sizeScale);
+      strokeWeight(max(1.0, round(swBase + 1.2 * sizeScale)));
       stroke(255, 255, 255, min(255, (LIGHT_ALPHA * 1.05) * aScene));
-      for (let i = 0; i < N; i++) if (this.slotU[i] <= 0.22) point(this.x[i], this.y[i]);
+      for (let i = 0; i < N; i++) if (this.slotU[i] <= 0.22) point(((this.x[i] + 0.5) | 0), ((this.y[i] + 0.5) | 0));
     }
 
     // Color overlay is *localized* (grouped) around a focus point.
@@ -763,7 +764,7 @@
       for (let i = 0; i < N; i++) {
         const dx = this.x[i] - fx, dy = this.y[i] - fy;
         const d2 = dx * dx + dy * dy;
-        if (d2 <= outer2) point(this.x[i], this.y[i]);
+        if (d2 <= outer2) point(((this.x[i] + 0.5) | 0), ((this.y[i] + 0.5) | 0));
       }
 
       // Minority tint: a single "stain" blob sitting on top of the wash (irregular edge via noise).
@@ -788,7 +789,7 @@
           const denK = lerp(1.15, 0.85, den);
 
           const edge = stainR * denK * (0.82 + 0.30 * n);
-          if (d2 <= edge * edge) point(this.x[i], this.y[i]);
+          if (d2 <= edge * edge) point(((this.x[i] + 0.5) | 0), ((this.y[i] + 0.5) | 0));
         }
       }
     }
