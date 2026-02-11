@@ -186,7 +186,7 @@ function draw() {
         const ok1 = Sampler.ensure(Acts.act, Acts.src1, Acts.cycle, _off1);
 
         // Prefetch a small window ahead so bursty inputs (claps) don't cause missing-frame fallbacks.
-        if (tAdvanced) {
+        if (tAdvanced && !compareMode) {
           Sampler.ensure(Acts.act, (Acts.src0 + 1) % Acts.cycle, Acts.cycle, _prefOff);
           Sampler.ensure(Acts.act, (Acts.src0 + 2) % Acts.cycle, Acts.cycle, _prefOff);
           Sampler.ensure(Acts.act, (Acts.src1 + 1) % Acts.cycle, Acts.cycle, _prefOff);
@@ -453,6 +453,20 @@ function keyPressed() {
       q: Sampler.queueLen ? Sampler.queueLen() : 0,
     };
     try {
+      if (Sampler && typeof Sampler.framePixHash === "function") {
+        snap.pixHash0 = Sampler.framePixHash(Acts.act, Acts.src0) >>> 0;
+        snap.pixHash1 = Sampler.framePixHash(Acts.act, Acts.src1) >>> 0;
+      }
+      if (Sampler && typeof Sampler.frameCountsHash === "function") {
+        snap.countsHash0 = Sampler.frameCountsHash(Acts.act, Acts.src0) >>> 0;
+        snap.countsHash1 = Sampler.frameCountsHash(Acts.act, Acts.src1) >>> 0;
+      }
+      if (Sampler && typeof Sampler.frameImgWH === "function") {
+        snap.img0 = Sampler.frameImgWH(Acts.act, Acts.src0);
+        snap.img1 = Sampler.frameImgWH(Acts.act, Acts.src1);
+      }
+    } catch (_) {}
+    try {
       if (typeof Particles !== "undefined" && Particles && Particles.desired && Particles.desired.length) {
         let h = 2166136261 >>> 0;
         // Hash a subset of cells for speed (still stable + comparable).
@@ -478,11 +492,22 @@ function drawDebug(level, desiredSum, moved, mismatch) {
   const z = (typeof pageZoom === "number" ? pageZoom : 1) || 1;
   const bufW = round(width * pd);
   const bufH = round(height * pd);
+  let pix0 = 0, pix1 = 0, ch0 = 0, ch1 = 0;
+  try {
+    if (Sampler && typeof Sampler.framePixHash === "function") {
+      pix0 = Sampler.framePixHash(Acts.act, Acts.src0) >>> 0;
+      pix1 = Sampler.framePixHash(Acts.act, Acts.src1) >>> 0;
+    }
+    if (Sampler && typeof Sampler.frameCountsHash === "function") {
+      ch0 = Sampler.frameCountsHash(Acts.act, Acts.src0) >>> 0;
+      ch1 = Sampler.frameCountsHash(Acts.act, Acts.src1) >>> 0;
+    }
+  } catch (_) {}
 
   push();
   noStroke();
   fill(0, 160);
-  rect(10, 10, 520, 106, 8);
+  rect(10, 10, 520, 122, 8);
   fill(255);
   textSize(12);
   textAlign(LEFT, TOP);
@@ -492,6 +517,9 @@ function drawDebug(level, desiredSum, moved, mismatch) {
   text(`cycle:${Acts.cycle} SRC:${SRC_COUNT[Acts.act] || 0} step:${step} fCycle:${framesPerCycle} ready:${ready}  src0/src1:${Acts.src0}/${Acts.src1} a:${Acts.alpha.toFixed(2)} cycles:${Acts.cycles}`, 18, 32);
   text(`grid:${COLS}x${ROWS} cell:${cellW.toFixed(2)} zoom:${z.toFixed(2)} dpr:${dpr.toFixed(2)} pd:${pd.toFixed(2)} buf:${bufW}x${bufH} desiredSum:${desiredSum} moved:${moved} mismatch:${mismatch} meanDist:${debugMeanCellDist.toFixed(1)} catchUp:${catchUp.toFixed(2)} hot:${_hotCount} lane:${debugTransport}  cache(h/m):${Sampler.hitsF}/${Sampler.missesF} total:${Sampler.hits}/${Sampler.misses} inFlight:${Sampler.inFlight || 0} q:${q} level:${level.toFixed(3)}  ${typ}`, 18, 48);
   text(`imagesDrawnToCanvas:${imagesDrawnToCanvas}`, 18, 64);
+  if (pix0 || pix1 || ch0 || ch1) {
+    text(`pixHash0/1:${pix0}/${pix1}  countsHash0/1:${ch0}/${ch1}`, 18, 96);
+  }
   if (compareMode) {
     text(`COMPARE: act=${compareAct} src0=${compareSrc0} alpha=${compareAlpha.toFixed(2)}  (1-4 act, ←/→ src, ↑/↓ alpha, C toggle)`, 18, 80);
   }

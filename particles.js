@@ -720,23 +720,28 @@
       : 1;
     const stageA = Acts && Acts.mode === "TRANSITION" && p < DANCE_PORTION;
 
+    const sizeScale = (typeof cellW === "number" && typeof CELL_SIZE === "number" && CELL_SIZE > 0)
+      ? (cellW / CELL_SIZE)
+      : 1;
+    const swBase = max(1.0, PARTICLE_SIZE * sizeScale);
+
     if (!stageA) {
-      strokeWeight(PARTICLE_SIZE);
+      strokeWeight(swBase);
       stroke(255, 255, 255, LIGHT_ALPHA * aScene);
       for (let i = 0; i < N; i++) point(this.x[i], this.y[i]);
     } else {
       // Tail (faded)
-      strokeWeight(max(1.0, PARTICLE_SIZE - 0.2));
+      strokeWeight(max(1.0, swBase - 0.2 * sizeScale));
       stroke(255, 255, 255, (LIGHT_ALPHA * 0.28) * aScene);
       for (let i = 0; i < N; i++) if (this.slotU[i] > 0.58) point(this.x[i], this.y[i]);
 
       // Mid
-      strokeWeight(PARTICLE_SIZE);
+      strokeWeight(swBase);
       stroke(255, 255, 255, (LIGHT_ALPHA * 0.62) * aScene);
       for (let i = 0; i < N; i++) if (this.slotU[i] > 0.22 && this.slotU[i] <= 0.58) point(this.x[i], this.y[i]);
 
       // Head (more saturated)
-      strokeWeight(PARTICLE_SIZE + 1.2);
+      strokeWeight(swBase + 1.2 * sizeScale);
       stroke(255, 255, 255, min(255, (LIGHT_ALPHA * 1.05) * aScene));
       for (let i = 0; i < N; i++) if (this.slotU[i] <= 0.22) point(this.x[i], this.y[i]);
     }
