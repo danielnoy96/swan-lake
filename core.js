@@ -51,12 +51,20 @@
     } catch (_) {}
   }, 1500);
   window.addEventListener("error", (e) => {
+    // Ignore errors from browser extensions; they can appear on GitHub Pages / Live Server
+    // and shouldn't stop the sketch.
+    try {
+      const file = String(e?.filename || "");
+      if (file.startsWith("chrome-extension://")) return;
+    } catch (_) {}
     const msg = String(e?.message || e || "Unknown error");
     const src = e?.filename ? `\n@ ${e.filename}:${e.lineno || 0}:${e.colno || 0}` : "";
     show(`[ERROR]\n${msg}${src}`);
   });
   window.addEventListener("unhandledrejection", (e) => {
     const msg = String(e?.reason?.stack || e?.reason || "Unhandled rejection");
+    // Same: ignore extension-origin stacks so they don't freeze the sketch.
+    if (msg.includes("chrome-extension://")) return;
     show(`[REJECTION]\n${msg}`);
   });
 })();
@@ -76,6 +84,8 @@ const TRANSITION_DURATION = 2.6, DANCE_PORTION = 0.78;
 const MIC_THRESHOLD = 0.03;
 // Auto mode speed in sound-seconds per real second (applied with dt).
 const AUTO_SPEED = 1.0;
+// Rendering pixel density cap (prevents huge retina buffers, but keeps GitHub Pages zoom differences consistent).
+const PIXEL_DENSITY_CAP = 1.5;
 
 // Scene visibility (fade in/out based on mic level; independent of sound-time `t` so it can fade out on silence)
 const VIS_IN = 0.16;
@@ -121,9 +131,19 @@ let COLS = 1, ROWS = 1, CELLS = 1;
 let gridX0 = 0, gridY0 = 0;
 let cellW = 1, cellH = 1, invCellW = 1, invCellH = 1;
 
+function applyPixelDensity() {
+  try {
+    const dpr = max(1, (typeof window !== "undefined" ? (window.devicePixelRatio || 1) : 1));
+    pixelDensity(min(PIXEL_DENSITY_CAP, dpr));
+  } catch (_) {}
+}
+
 function resizeGrid() {
-  cellW = CELL_SIZE;
-  cellH = CELL_SIZE;
+  const pd = max(1, (typeof pixelDensity === "function" ? pixelDensity() : 1) || 1);
+  // Keep grid cell size stable in *physical* pixels across different site zoom / devicePixelRatio.
+  // This prevents GitHub Pages (often a different per-site zoom) from changing the silhouette look.
+  cellW = CELL_SIZE / pd;
+  cellH = CELL_SIZE / pd;
   COLS = max(1, floor(width / cellW));
   ROWS = max(1, floor(height / cellH));
   CELLS = COLS * ROWS;

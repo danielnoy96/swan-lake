@@ -13,11 +13,22 @@ const Sampler = {
   // On-demand loader (avoids preloading hundreds of PNGs -> crashes/reload loops on mobile)
   queue: [],
   inFlight: 0,
-  maxInFlight: 2,
+  maxInFlight: 3,
   hits: 0, misses: 0, hitsF: 0, missesF: 0,
   init() {
     this.g = createGraphics(this.w, this.h);
     this.g.pixelDensity(1); this.g.noSmooth();
+    // Hint to the browser that we will call getImageData/loadPixels frequently on this buffer.
+    // Helps performance/stability across hosts (local vs GitHub Pages) and devices.
+    try {
+      const ctx = this.g.canvas && this.g.canvas.getContext
+        ? this.g.canvas.getContext("2d", { willReadFrequently: true })
+        : null;
+      if (ctx) {
+        this.g.drawingContext = ctx;
+        if (this.g._renderer) this.g._renderer.drawingContext = ctx;
+      }
+    } catch (_) {}
   },
   realloc() {
     this.weights = new Float32Array(CELLS);

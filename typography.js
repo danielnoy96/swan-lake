@@ -163,6 +163,14 @@ const Typography = {
     const g = createGraphics(W, H);
     g.pixelDensity(1);
     g.noSmooth();
+    // We read pixels from this buffer to build a mask; optimize for frequent readback.
+    try {
+      const ctx = g.canvas && g.canvas.getContext ? g.canvas.getContext("2d", { willReadFrequently: true }) : null;
+      if (ctx) {
+        g.drawingContext = ctx;
+        if (g._renderer) g._renderer.drawingContext = ctx;
+      }
+    } catch (_) {}
     g.clear();
     g.imageMode(CORNER);
     if (opt.drawMode === "STRETCH") {

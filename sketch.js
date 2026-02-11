@@ -15,7 +15,7 @@ let _debugRate = 0;
 
 function setup() {
   const cnv = createCanvas(windowWidth, windowHeight);
-  pixelDensity(1);
+  applyPixelDensity();
   try { cnv?.style?.("display", "block"); } catch (_) {}
   try {
     mic = new p5.AudioIn();
@@ -40,7 +40,7 @@ function setup() {
 
 function windowResized() {
   resizeCanvas(windowWidth, windowHeight);
-  pixelDensity(1);
+  applyPixelDensity();
   try {
     Style.init();
     resizeGrid();
@@ -125,7 +125,7 @@ function draw() {
         const ok1 = Sampler.ensure(Acts.act, Acts.src1, Acts.cycle, _off1);
 
         // Prefetch a small window ahead so bursty inputs (claps) don't cause missing-frame fallbacks.
-        if (!autoRun && tAdvanced) {
+        if (tAdvanced) {
           Sampler.ensure(Acts.act, (Acts.src0 + 1) % Acts.cycle, Acts.cycle, _prefOff);
           Sampler.ensure(Acts.act, (Acts.src0 + 2) % Acts.cycle, Acts.cycle, _prefOff);
           Sampler.ensure(Acts.act, (Acts.src1 + 1) % Acts.cycle, Acts.cycle, _prefOff);
@@ -321,6 +321,8 @@ function drawDebug(level, desiredSum, moved, mismatch) {
   const ready = Sampler.ready ? Sampler.ready(Acts.act) : 0;
   const q = Sampler.queueLen ? Sampler.queueLen() : 0;
   const typ = (Typography && Typography.debugString) ? Typography.debugString() : "";
+  const dpr = (typeof window !== "undefined" ? (window.devicePixelRatio || 1) : 1);
+  const pd = (typeof pixelDensity === "function" ? pixelDensity() : 1) || 1;
 
   push();
   noStroke();
@@ -333,7 +335,7 @@ function drawDebug(level, desiredSum, moved, mismatch) {
   const step = max(1, (FRAME_STEP && FRAME_STEP[Acts.act]) | 0);
   const framesPerCycle = Acts.cycle > 0 ? ceil(Acts.cycle / step) : 0;
   text(`cycle:${Acts.cycle} SRC:${SRC_COUNT[Acts.act] || 0} step:${step} fCycle:${framesPerCycle} ready:${ready}  src0/src1:${Acts.src0}/${Acts.src1} a:${Acts.alpha.toFixed(2)} cycles:${Acts.cycles}`, 18, 32);
-  text(`grid:${COLS}x${ROWS} desiredSum:${desiredSum} moved:${moved} mismatch:${mismatch} meanDist:${debugMeanCellDist.toFixed(1)} catchUp:${catchUp.toFixed(2)} hot:${_hotCount} lane:${debugTransport}  cache(h/m):${Sampler.hitsF}/${Sampler.missesF} total:${Sampler.hits}/${Sampler.misses} inFlight:${Sampler.inFlight || 0} q:${q} level:${level.toFixed(3)}  ${typ}`, 18, 48);
+  text(`grid:${COLS}x${ROWS} cell:${cellW.toFixed(2)} dpr:${dpr.toFixed(2)} pd:${pd.toFixed(2)} desiredSum:${desiredSum} moved:${moved} mismatch:${mismatch} meanDist:${debugMeanCellDist.toFixed(1)} catchUp:${catchUp.toFixed(2)} hot:${_hotCount} lane:${debugTransport}  cache(h/m):${Sampler.hitsF}/${Sampler.missesF} total:${Sampler.hits}/${Sampler.misses} inFlight:${Sampler.inFlight || 0} q:${q} level:${level.toFixed(3)}  ${typ}`, 18, 48);
   text(`imagesDrawnToCanvas:${imagesDrawnToCanvas}`, 18, 64);
   pop();
 }
