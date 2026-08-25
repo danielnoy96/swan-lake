@@ -9,7 +9,7 @@
 | `assets/act3/` | 192 | 25.5 MB | Act 3 animation frames |
 | `assets/act4/` | 136 | 18.0 MB | Act 4 animation frames |
 | `assets/loading/` | 1 | 0.2 MB | Particle-reveal loading image |
-| `assets/typography/` | 2 | 0.4 MB | Large and small typography masks |
+| `assets/typography/` | 3 | 0.7 MB | Full-screen typography artwork and legacy masks |
 | `assets/_debug/` | 2 | less than 0.1 MB | Typography mask diagnostics |
 | `assets/density/` | 4 | 1.25 MB | Compact runtime particle-density data |
 
@@ -48,12 +48,14 @@ Frames for an act must be contiguous. If frames are added or removed, update `SR
 
 ## Typography
 
-The typography masks are:
+The active typography artwork is `assets/typography/typography.png`. It is a
+full-screen 16:9 composition containing the large title and both small captions.
+The runtime derives separate particle masks from its middle, top, and bottom
+bands, so preserve the layout and strong dark-on-light contrast when replacing
+it. Very large sources are downscaled at runtime before mask generation.
 
-- `assets/typography/bigtypography.png`
-- `assets/typography/smalltypography.png`
-
-They are sampled as masks rather than drawn directly. Preserve clear contrast and transparency when replacing them. Very large sources are downscaled at runtime before mask generation.
+`bigtypography.png` and `smalltypography.png` are retained as legacy source
+assets but are no longer loaded by the artwork.
 
 ## Loading image
 

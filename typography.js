@@ -1,7 +1,6 @@
 // Typography overlay rendered as particles (template-driven).
-// Uses two separate templates:
-// - assets/typography/bigtypography.png
-// - assets/typography/smalltypography.png
+// Uses one full-screen artwork, split into large- and small-type masks at runtime:
+// - assets/typography/typography.png
 
 const Typography = {
   bigImg: null,
@@ -45,8 +44,8 @@ const Typography = {
   _stats: { bigCand: 0, smallCand: 0 },
 
   preload() {
-    this.bigImg = loadImage("assets/typography/bigtypography.png");
-    this.smallImg = loadImage("assets/typography/smalltypography.png");
+    this.bigImg = loadImage("assets/typography/typography.png");
+    this.smallImg = this.bigImg;
   },
 
   init() {
@@ -113,32 +112,30 @@ const Typography = {
   },
 
   _updateRects() {
-    if (this.bigImg && this.bigImg.width) {
-      fitRect(this.bigImg.width, this.bigImg.height, width, height, this.bigRect);
-    } else {
-      this.bigRect.x = 0; this.bigRect.y = 0; this.bigRect.w = width; this.bigRect.h = height;
-    }
-
-    // Small text is authored as a full-screen layout; map it directly to the canvas.
-    // (This stays stable even if you change the source PNG dimensions.)
+    // The typography is authored as one full-screen 16:9 layout. Both particle
+    // groups share its coordinate system so the composition survives resizing.
+    this.bigRect.x = 0; this.bigRect.y = 0; this.bigRect.w = width; this.bigRect.h = height;
     this.smallRect.x = 0; this.smallRect.y = 0; this.smallRect.w = width; this.smallRect.h = height;
   },
 
   _buildTemplates() {
-    // BIG: preserve template aspect for crisp big letters.
+    const templateH = max(1, floor(960 * (height / max(1, width))));
+
+    // BIG: sample only the middle band containing SWAN / LAKE.
     this._big = this._buildTemplate(this.bigImg, {
-      w: 820,
-      h: 0,
-      drawMode: "FIT",
+      w: 960,
+      h: templateH,
+      drawMode: "STRETCH",
       alphaThr: 48,
       step: 2,
       gamma: 1.15,
+      regions: [[0.25, 0.75]],
     });
 
     // SMALL: build mask in canvas aspect so it maps 1:1 to screen space.
     this._small = this._buildTemplate(this.smallImg, {
       w: 960,
-      h: max(1, floor(960 * (height / max(1, width)))),
+      h: templateH,
       drawMode: "STRETCH",
       // Small text is thin; include anti-aliased edges but avoid band leakage.
       alphaThr: 14,
@@ -146,6 +143,7 @@ const Typography = {
       gamma: 1.0,
       noTangent: true,
       dilate: 0,
+      regions: [[0, 0.20], [0.80, 1]],
     });
 
     this._stats.bigCand = this._big ? this._big.n : 0;
@@ -200,23 +198,38 @@ const Typography = {
 
     const size = W * H;
     let mask = new Uint8Array(size);
+    let minA = 255;
     let maxA = 0;
     for (let i = 0; i < size; i++) {
       const a = g.pixels[4 * i + 3] | 0;
       mask[i] = a;
+      if (a < minA) minA = a;
       if (a > maxA) maxA = a;
     }
 
-    // Fallback if alpha isn't useful: treat dark pixels as ink on a solid background.
-    let useAlpha = maxA > 8;
+    // Transparent masks use alpha. The supplied full-screen artwork is opaque,
+    // so for that case derive coverage from its dark ink on a white background.
+    const useAlpha = maxA > 8 && minA < 250;
     if (!useAlpha) {
       for (let i = 0; i < size; i++) {
         const p = 4 * i;
-        const br = (g.pixels[p] + g.pixels[p + 1] + g.pixels[p + 2]) / 765;
-        const a = br < 0.70 ? 255 : 0;
-        mask[i] = a;
+        const br = (g.pixels[p] + g.pixels[p + 1] + g.pixels[p + 2]) / 3;
+        mask[i] = 255 - br;
       }
-      useAlpha = true;
+    }
+
+    // Keep the two particle populations independent even though they now use
+    // the same source artwork.
+    if (opt.regions && opt.regions.length) {
+      for (let y = 0; y < H; y++) {
+        const y01 = (y + 0.5) / H;
+        let inside = false;
+        for (let r = 0; r < opt.regions.length; r++) {
+          const band = opt.regions[r];
+          if (y01 >= band[0] && y01 <= band[1]) { inside = true; break; }
+        }
+        if (!inside) mask.fill(0, y * W, (y + 1) * W);
+      }
     }
 
     // Optional dilation (helps thin glyphs stay readable at low resolution).
