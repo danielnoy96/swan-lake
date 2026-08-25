@@ -48,7 +48,13 @@
       if (this.cycle <= 0 || this.dur <= 0) return this.startTransition();
       if (this.cycles >= 1 || this.elapsed >= this.dur) return this.startTransition();
     } else {
-      if (t - this.transitionStartT >= TRANSITION_DURATION) return this.endTransition();
+      if (t - this.transitionStartT >= TRANSITION_DURATION) {
+        if (!LEGACY_SAMPLER_MODE && Sampler.actState && Sampler.actState(this.next) !== "ready") {
+          Sampler.loadAct(this.next).catch(() => {});
+          return;
+        }
+        return this.endTransition();
+      }
     }
   },
 };

@@ -46,6 +46,12 @@ let _loadingCounts = null;
 let _loadingCountsOK = false;
 let _bootShapeApplied = false;
 let _bootSeedsInited = false;
+let _densityBootAct = 0;
+let _densityBootRequested = false;
+let _densityBackgroundStarted = false;
+let _densityWaitStartedMs = 0;
+let _densityWaitingNow = false;
+let _densityLoadingVisualStartMs = 0;
 function _ensureMainCanvasCss() {
   try {
     if (!_mainCanvasElt) _mainCanvasElt = document.getElementById ? document.getElementById("mainCanvas") : null;
@@ -182,7 +188,9 @@ function _applyLoadingShapeToParticles() {
 function drawLoadingScreen(pct, ready, total) {
   // Pretty boot: particle-reveal of the loading image (organic build).
   // (We keep the old text-based loader below as fallback; early-return from the pretty path.)
-  const p = constrain(pct, 0, 1);
+  const p = LEGACY_SAMPLER_MODE
+    ? constrain(pct, 0, 1)
+    : constrain(0.12 + max(0, millis() - _densityLoadingVisualStartMs) / 2600, 0.12, 0.90);
 
   // Ensure we have a target silhouette to reveal.
   _initLoadingCountsIfNeeded();
@@ -234,7 +242,10 @@ function drawLoadingScreen(pct, ready, total) {
   noStroke();
   textAlign(CENTER, TOP);
   textSize(14);
-  text(`Loading... ${Math.round(p * 100)}%`, width / 2, 14);
+  const loadingLabel = LEGACY_SAMPLER_MODE
+    ? `Loading... ${Math.round(p * 100)}%`
+    : `Loading Act ${_densityBootAct || 1}…`;
+  text(loadingLabel, width / 2, 14);
   pop();
   return;
 
@@ -254,6 +265,50 @@ function drawLoadingScreen(pct, ready, total) {
     text(`q:${q}  compute:${cq}  inFlight:${inf}`, width / 2, height / 2 + 40);
   } catch (_) {}
 }
+function _restoreGridAfterBoot() {
+  try {
+    resizeGrid();
+    if (typeof Particles !== "undefined" && Particles && typeof Particles.remapCellsFromPositions === "function") {
+      Particles.remapCellsFromPositions();
+    }
+  } catch (_) {}
+}
+function _startDensityBackground(primaryAct) {
+  if (LEGACY_SAMPLER_MODE || _densityBackgroundStarted) return;
+  _densityBackgroundStarted = true;
+  (async () => {
+    let act = primaryAct;
+    const seen = new Set([primaryAct]);
+    while (seen.size < ACTS.length) {
+      act = nextActWithFrames(act);
+      if (seen.has(act)) break;
+      seen.add(act);
+      await Sampler.loadAct(act);
+    }
+  })().catch(() => {});
+}
+function _bootStepDensity() {
+  if (!booting) return true;
+  if (!_densityBootRequested) {
+    _densityBootRequested = true;
+    _densityBootAct = compareMode ? constrain(compareAct | 0, 1, 4) : 1;
+    _densityLoadingVisualStartMs = millis();
+    Sampler.loadAct(_densityBootAct)
+      .then(() => _startDensityBackground(_densityBootAct))
+      .catch(() => {});
+  }
+  const ready = Sampler.actState(_densityBootAct) === "ready";
+  const typOK = (typeof Typography !== "undefined" && Typography && Typography.ready);
+  if (ready && typOK) {
+    booting = false;
+    try { Render.clipOn = false; Render.revealOn = false; } catch (_) {}
+    _restoreGridAfterBoot();
+    _startDensityBackground(_densityBootAct);
+    return true;
+  }
+  drawLoadingScreen(ready ? 1 : 0, ready ? (SRC_COUNT[_densityBootAct] || 0) : 0, SRC_COUNT[_densityBootAct] || 0);
+  return false;
+}
 function _bootInitIfNeeded() {
   if (_bootActs.length > 0) return;
   _bootActs = [];
@@ -272,7 +327,8 @@ function _bootInitIfNeeded() {
 }
 function _bootStepAll() {
   if (!booting) return true;
-  if (compareMode) { booting = false; return true; }
+  if (!LEGACY_SAMPLER_MODE) return _bootStepDensity();
+  if (compareMode) { booting = false; _restoreGridAfterBoot(); return true; }
   _bootInitIfNeeded();
   if (_bootActs.length === 0 || _bootTotal <= 0) { booting = false; return true; }
 
@@ -328,19 +384,40 @@ function _bootStepAll() {
       Render.revealOn = false;
     } catch (_) {}
     // Restore letterboxed simulation grid for the real sketch.
-    try {
-      resizeGrid();
-      // `resizeGrid()` reallocates `Particles.cellCounts`, so rebuild counts from current positions
-      // or redistribution will never happen and we'll stay stuck in the loading silhouette.
-      if (typeof Particles !== "undefined" && Particles && typeof Particles.remapCellsFromPositions === "function") {
-        Particles.remapCellsFromPositions();
-      }
-    } catch (_) {}
+    _restoreGridAfterBoot();
     return true;
   }
 
   drawLoadingScreen(pct, ready, _bootTotal);
   return false;
+}
+
+function _densityCanAdvance(delta) {
+  if (LEGACY_SAMPLER_MODE || compareMode || Acts.mode !== "TRANSITION") return delta;
+  if (!Sampler.actState || Sampler.actState(Acts.next) === "ready") return delta;
+  Sampler.loadAct(Acts.next).catch(() => {});
+  const boundary = Acts.transitionStartT + TRANSITION_DURATION;
+  return max(0, min(delta, boundary - t));
+}
+function _updateDensityWaitState() {
+  _densityWaitingNow = !LEGACY_SAMPLER_MODE && !compareMode && Acts.mode === "TRANSITION" &&
+    t >= Acts.transitionStartT + TRANSITION_DURATION - 1e-6 &&
+    Sampler.actState && Sampler.actState(Acts.next) !== "ready";
+  if (_densityWaitingNow) {
+    if (!_densityWaitStartedMs) _densityWaitStartedMs = millis();
+  } else {
+    _densityWaitStartedMs = 0;
+  }
+}
+function drawDensityWaitNotice() {
+  if (!_densityWaitingNow || !_densityWaitStartedMs || millis() - _densityWaitStartedMs < 250) return;
+  push();
+  fill(255, 220);
+  noStroke();
+  textAlign(CENTER, BOTTOM);
+  textSize(14);
+  text(`Loading Act ${Acts.next}…`, width / 2, height - 18);
+  pop();
 }
 function _applyUrlParams() {
   try {
@@ -484,7 +561,7 @@ function draw() {
 
   // If neither Auto nor Mic is running, keep showing the start screen (even if `audioStarted`
   // was previously true due to Auto mode). This prevents a "dead" state where nothing renders.
-  if (!autoRun && !micRunning) {
+  if (!compareMode && !autoRun && !micRunning) {
     background(0);
     drawStartScreen();
     return;
@@ -500,13 +577,13 @@ function draw() {
   _debugDtSec = dtSec;
 
   if (!compareMode && autoRun) {
-    t += AUTO_SPEED * dtSec;
+    t += _densityCanAdvance(AUTO_SPEED * dtSec);
     _debugRate = AUTO_SPEED;
   } else if (!compareMode && micRunning && level > MIC_THRESHOLD) {
     // Mic speed in sound-seconds per real second.
     // Quickly reaches 1.0 so "always loud" finishes a full loop in ~60s like Auto.
     const rate = map(level, MIC_THRESHOLD, MIC_THRESHOLD + 0.02, 0.35, 1.0, true);
-    t += rate * dtSec;
+    t += _densityCanAdvance(rate * dtSec);
     _debugRate = rate;
   } else {
     _debugRate = 0;
@@ -556,18 +633,21 @@ function draw() {
     } else {
       Acts.update();
     }
+    _updateDensityWaitState();
 
     // Streaming prefetch: keep a small window of upcoming frames requested so loads/compute happen
     // ahead of time (prevents "first loop" hitching when new frames are needed).
     try {
-      if (Acts.mode === "ACT") {
-        const a = Acts.act;
-        const cycle = SRC_COUNT[a] || 0;
-        if (cycle > 0) {
-          const step = max(1, (FRAME_STEP && FRAME_STEP[a]) | 0);
-          const k = ((_prefetchK++ % PREFETCH_AHEAD) + 2) | 0;
-          const idx = (Acts.src0 + k * step) % cycle;
-          Sampler.ensure(a, idx, cycle, _prefOff);
+      if (LEGACY_SAMPLER_MODE) {
+        if (Acts.mode === "ACT") {
+          const a = Acts.act;
+          const cycle = SRC_COUNT[a] || 0;
+          if (cycle > 0) {
+            const step = max(1, (FRAME_STEP && FRAME_STEP[a]) | 0);
+            const k = ((_prefetchK++ % PREFETCH_AHEAD) + 2) | 0;
+            const idx = (Acts.src0 + k * step) % cycle;
+            Sampler.ensure(a, idx, cycle, _prefOff);
+          }
         }
       }
     } catch (_) {}
@@ -584,7 +664,7 @@ function draw() {
         const ok1 = Sampler.ensure(Acts.act, Acts.src1, Acts.cycle, _off1);
 
         // Prefetch a small window ahead so bursty inputs (claps) don't cause missing-frame fallbacks.
-        if (tAdvanced && !compareMode) {
+        if (LEGACY_SAMPLER_MODE && tAdvanced && !compareMode) {
           Sampler.ensure(Acts.act, (Acts.src0 + 1) % Acts.cycle, Acts.cycle, _prefOff);
           Sampler.ensure(Acts.act, (Acts.src0 + 2) % Acts.cycle, Acts.cycle, _prefOff);
           Sampler.ensure(Acts.act, (Acts.src1 + 1) % Acts.cycle, Acts.cycle, _prefOff);
@@ -737,6 +817,7 @@ function draw() {
     if (debugOn) drawDebug(level, desiredSum, moved, mismatch);
     if (showGrid) drawGridOverlay();
     Typography.draw(level);
+    drawDensityWaitNotice();
   } catch (e) {
     window.__fatalError = e?.stack || String(e);
   }

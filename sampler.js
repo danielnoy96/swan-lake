@@ -1,5 +1,9 @@
 ﻿// ---- Sampler: small buffer -> per-cell desired particle counts ----
-const Sampler = {
+// PNG-backed source sampler. Normal playback uses the density facade from
+// density-sampler.js; this backend remains available for generation, verification,
+// and the explicit ?legacySampler=1 recovery mode.
+const PngSampler = {
+  assetBase: "",
   g: null, rG: { x: 0, y: 0, w: 0, h: 0 }, rC: { x: 0, y: 0, w: 0, h: 0 },
   w: TARGET_W, h: TARGET_H,
   weights: new Float32Array(1), frac: new Float32Array(1),
@@ -219,7 +223,7 @@ const Sampler = {
   },
   _path(a, idx) {
     // Keep filenames consistent with existing export: actX_00000.png ...
-    return `assets/act${a}/act${a}_${nf(idx, 5)}.png`;
+    return `${this.assetBase}assets/act${a}/act${a}_${nf(idx, 5)}.png`;
   },
   queueLen() { return this.queue.length; },
   computeQueueLen() { return this.computeQueue.length; },
@@ -236,6 +240,40 @@ const Sampler = {
     let n = 0;
     for (let i = 0; i < c.done.length; i++) n += c.done[i] ? 1 : 0;
     return n;
+  },
+  actState(a) {
+    const c = this.cache[a];
+    if (!c) return "idle";
+    for (let i = 0; i < c.failed.length; i++) if (c.failed[i]) return "error";
+    if (this.ready(a) >= c.cycle) return "ready";
+    return "loading";
+  },
+  progress() {
+    let ready = 0, loading = 0, error = 0;
+    for (const a of ACTS) {
+      const state = this.actState(a);
+      if (state === "ready") ready++;
+      else if (state === "loading") loading++;
+      else if (state === "error") error++;
+    }
+    return { ready, loading, error, total: ACTS.length };
+  },
+  loadAct(a) {
+    const cycle = SRC_COUNT[a] || 0;
+    if (cycle <= 0) return Promise.reject(new Error(`Unknown act ${a}`));
+    this.ensureActCache(a, cycle);
+    const dummy = { off: 0 };
+    for (let idx = 0; idx < cycle; idx++) this.ensure(a, idx, cycle, dummy);
+    return new Promise((resolve, reject) => {
+      const poll = () => {
+        const c = this.cache[a];
+        if (!c || c.cycle !== cycle) return reject(new Error(`Act ${a} cache was reset while loading`));
+        for (let i = 0; i < cycle; i++) if (c.failed[i]) return reject(new Error(`Act ${a} frame ${i} failed to load`));
+        if (this.ready(a) >= cycle) return resolve(c);
+        setTimeout(poll, 16);
+      };
+      poll();
+    });
   },
   _pump() {
     while (

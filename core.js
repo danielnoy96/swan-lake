@@ -77,6 +77,10 @@ const FPS_EFFECTIVE = { 1: 14, 2: 14, 3: 14, 4: 14 };
 // Frame stepping: set to 1 to use every source frame (full fidelity).
 const FRAME_STEP = { 1: 1, 2: 1, 3: 1, 4: 1 };
 
+// Cache key for precomputed assets/density/actN.swd files. Bump whenever the
+// generated density files change so static hosts cannot serve a stale payload.
+const DENSITY_REVISION = "20260825-1";
+
 const TARGET_W = 160, TARGET_H = 284;
 const CELL_SIZE = 18; // square grid size (px) (tune: larger -> fewer cells -> denser silhouettes)
 // Fixed simulation grid (keeps particle redistribution stable across different viewport sizes/hosts).
