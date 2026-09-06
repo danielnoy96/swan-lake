@@ -535,7 +535,10 @@ const Typography = {
       point(hx(this.bigRect.x + tpl.cX[idx] * this.bigRect.w), hx(this.bigRect.y + tpl.cY[idx] * this.bigRect.h));
     }
 
-    strokeWeight(this.SMALL_SIZE);
+    // Canvas coordinates use physical pixels. Scale the thin caption particles
+    // with display density so they do not disappear on Retina/mobile screens.
+    const displayDensity = (typeof window !== "undefined" ? (window.devicePixelRatio || 1) : 1) || 1;
+    strokeWeight(max(1.5, this.SMALL_SIZE * displayDensity));
     const smallStart = bigN;
     for (let i = smallStart; i < this.n; i++) {
       const packed = this.anchor[i] >>> 0;
